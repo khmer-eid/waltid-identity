@@ -1,0 +1,71 @@
+apiVersion: v1
+entries:
+  issuer:
+  - apiVersion: v2
+    appVersion: 0.1.0
+    created: "2026-02-03T07:42:47.150058563Z"
+    description: A Helm chart for Kubernetes
+    digest: 5b5751beeb37c1a410410136c00609349ab7dde8f8cd215e3786a62b29889258
+    name: issuer
+    type: application
+    urls:
+    - https://khmer-eid.github.io/waltid-identity/issuer-0.1.0.tgz
+    version: 0.1.0
+  portal:
+  - apiVersion: v2
+    appVersion: 1.16.0
+    created: "2026-02-03T07:42:47.150320512Z"
+    description: A Helm chart for Kubernetes
+    digest: 3a0627ef323101d86a0acd6a16bd4550b5aaab92a187d08fcbb8a53af1535b03
+    name: portal
+    type: application
+    urls:
+    - https://khmer-eid.github.io/waltid-identity/portal-0.1.0.tgz
+    version: 0.1.0
+  verifier:
+  - apiVersion: v2
+    appVersion: 0.1.0
+    created: "2026-02-03T07:42:47.150577631Z"
+    description: A Helm chart for Kubernetes
+    digest: cb3ce82b480b6aee4384a9b6104ae56553dc976374f0445d1b6aa1c78f11f3e8
+    name: verifier
+    type: application
+    urls:
+    - https://khmer-eid.github.io/waltid-identity/verifier-0.1.0.tgz
+    version: 0.1.0
+  waltid:
+  - apiVersion: v2
+    appVersion: 1.16.0
+    created: "2026-02-03T07:42:47.151832722Z"
+    dependencies:
+    - name: issuer
+      repository: file://../issuer
+      version: 0.1.0
+    - name: verifier
+      repository: file://../verifier
+      version: 0.1.0
+    - name: portal
+      repository: file://../portal
+      version: 0.1.0
+    - name: web-wallet
+      repository: file://../web-wallet
+      version: 0.1.0
+    description: A Helm chart for Kubernetes
+    digest: 9565d54b88c2898f1ff11446c4b30f18fa35c153d33197ab2de0af5baa963a7f
+    name: waltid
+    type: application
+    urls:
+    - https://khmer-eid.github.io/waltid-identity/waltid-0.1.0.tgz
+    version: 0.1.0
+  web-wallet:
+  - apiVersion: v2
+    appVersion: 0.1.0
+    created: "2026-02-03T07:42:47.152226296Z"
+    description: A Helm chart for Kubernetes
+    digest: 1f6aa398bb41a23a7d81d952c5d7b304fd218ffd60ff0ddf4c31059ff94a3a5e
+    name: web-wallet
+    type: application
+    urls:
+    - https://khmer-eid.github.io/waltid-identity/web-wallet-0.1.0.tgz
+    version: 0.1.0
+generated: "2026-02-03T07:42:47.149633811Z"
