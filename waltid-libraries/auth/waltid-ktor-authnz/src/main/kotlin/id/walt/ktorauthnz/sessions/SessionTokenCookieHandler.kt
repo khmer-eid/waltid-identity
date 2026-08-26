@@ -22,6 +22,7 @@ object SessionTokenCookieHandler {
             path = "/",
             httpOnly = true,
             secure = secure,
+            // This must remain Strict for CSRF protection
             extensions = mapOf("SameSite" to "Strict")
         )
     }
@@ -36,6 +37,7 @@ object SessionTokenCookieHandler {
             path = "/",
             httpOnly = true,
             secure = secure,
+            // This must remain Strict for CSRF protection
             extensions = mapOf("SameSite" to "Strict")
         )
     }

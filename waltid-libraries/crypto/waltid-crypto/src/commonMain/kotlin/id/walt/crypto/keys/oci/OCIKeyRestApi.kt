@@ -1,5 +1,3 @@
-@file:OptIn(ExperimentalTime::class)
-
 package id.walt.crypto.keys.oci
 
 import id.walt.crypto.exceptions.KeyNotFoundException
@@ -10,6 +8,7 @@ import id.walt.crypto.keys.*
 import id.walt.crypto.keys.jwk.JWKKey
 import id.walt.crypto.utils.Base64Utils.decodeFromBase64
 import id.walt.crypto.utils.Base64Utils.decodeFromBase64Url
+import id.walt.crypto.utils.Base64Utils.encodeToBase64
 import id.walt.crypto.utils.Base64Utils.encodeToBase64Url
 import id.walt.crypto.utils.JsonUtils.toJsonElement
 import id.walt.crypto.utils.JwsUtils.decodeJws
@@ -24,7 +23,6 @@ import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
-import io.ktor.util.*
 import io.ktor.util.date.*
 import kotlinx.datetime.DateTimeUnit
 import kotlinx.datetime.TimeZone
@@ -38,11 +36,9 @@ import love.forte.plugin.suspendtrans.annotation.JvmAsync
 import love.forte.plugin.suspendtrans.annotation.JvmBlocking
 import org.kotlincrypto.hash.sha2.SHA256
 import kotlin.io.encoding.Base64
-import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.js.ExperimentalJsExport
 import kotlin.js.JsExport
 import kotlin.time.Clock
-import kotlin.time.ExperimentalTime
 
 private val log = KotlinLogging.logger { }
 
@@ -139,7 +135,7 @@ class OCIKeyRestApi(
     @JsExport.Ignore
     override suspend fun signRaw(plaintext: ByteArray, customSignatureAlgorithm: String?): ByteArray {
         return retry {
-            val encodedMessage: String = SHA256().digest(plaintext).encodeBase64()
+            val encodedMessage = keyType.digestForSignature(plaintext).encodeToBase64()
 
             val requestBody = JsonObject(
                 mapOf(
@@ -205,9 +201,10 @@ class OCIKeyRestApi(
         val requestBody = JsonObject(
             mapOf(
                 "keyId" to JsonPrimitive(id),
-                "message" to JsonPrimitive(detachedPlaintext.encodeBase64()),
-                "signature" to JsonPrimitive(signed.encodeBase64()),
-                "signingAlgorithm" to JsonPrimitive(ociSigningAlgorithm)
+                "message" to JsonPrimitive(keyType.digestForSignature(detachedPlaintext).encodeToBase64()),
+                "signature" to JsonPrimitive(signed.encodeToBase64()),
+                "signingAlgorithm" to JsonPrimitive(ociSigningAlgorithm),
+                "messageType" to JsonPrimitive("DIGEST"),
             )
         ).toString()
 
@@ -389,7 +386,6 @@ class OCIKeyRestApi(
             }
         }
 
-        @OptIn(ExperimentalEncodingApi::class)
         private fun signingRequest(
             method: String, restApi: String, host: String, requestBody: String?, signingKey: String? // = null
         ): String {
@@ -417,7 +413,6 @@ class OCIKeyRestApi(
             return Base64.encode(sha256WithRsa(privateOciApiKey, signingString.encodeToByteArray()))
         }
 
-        @OptIn(ExperimentalEncodingApi::class)
         private fun calculateSHA256(data: String?): String {
             if (data == null) return ""
             val digest = SHA256()
@@ -528,5 +523,4 @@ private suspend fun <T> retry(retriesLeft: Int = 3, currentTry: Int = 1, block: 
                 else -> retry(retriesLeft - 1, currentTry + 1, block)
             }
         })
-
 

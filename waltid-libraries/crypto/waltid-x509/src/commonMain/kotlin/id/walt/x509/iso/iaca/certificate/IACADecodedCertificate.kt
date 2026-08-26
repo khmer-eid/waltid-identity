@@ -1,12 +1,12 @@
-@file:OptIn(ExperimentalTime::class)
-
 package id.walt.x509.iso.iaca.certificate
 
 import id.walt.crypto.keys.Key
+import id.walt.crypto2.keys.EncodedKey
 import id.walt.x509.*
 import id.walt.x509.iso.IssuerAlternativeName
-import okio.ByteString
-import kotlin.time.ExperimentalTime
+import id.walt.x509.iso.blockingBridge
+import kotlinx.io.bytestring.ByteString
+import kotlinx.io.bytestring.hexToByteString
 
 /**
  * Decoded view (not validated) of an IACA X.509 certificate.
@@ -22,6 +22,7 @@ data class IACADecodedCertificate internal constructor(
     val principalName: IACAPrincipalName,
     val validityPeriod: X509ValidityPeriod,
     val issuerAlternativeName: IssuerAlternativeName,
+    @Deprecated("Use crypto2PublicKey().", ReplaceWith("crypto2PublicKey()"))
     val publicKey: Key,
     val serialNumber: ByteString,
     val basicConstraints: X509BasicConstraints,
@@ -34,6 +35,16 @@ data class IACADecodedCertificate internal constructor(
 ) {
 
     /**
+     * Subject public key as a crypto2 JWK.
+     *
+     * The crypto2 replacement for [publicKey], matching
+     * [id.walt.x509.GenericX509DecodedCertificate.crypto2PublicKey]. Previously only the deprecation
+     * on [publicKey] named it, so callers following that advice did not compile.
+     */
+    @Suppress("DEPRECATION")
+    suspend fun crypto2PublicKey(): EncodedKey.Jwk = publicKey.toCrypto2PublicJwk()
+
+    /**
      * Convert the decoded certificate into the specification's profile data shape.
      */
     fun toIACACertificateProfileData() = IACACertificateProfileData(
@@ -42,6 +53,34 @@ data class IACADecodedCertificate internal constructor(
         issuerAlternativeName = issuerAlternativeName,
         crlDistributionPointUri = crlDistributionPointUri,
     )
+
+    /**
+     * Extract from the IACA certificate data related to the CertificateInfo VICAL structure.
+     */
+    suspend fun toIACACertificateInfo(): IACACertificateInfo {
+        val extras = platformExtractIACACertificateInfoExtras(
+            certificateHandle = certificate,
+        )
+        return IACACertificateInfo(
+            certificate = certificate.getCertificateDer().bytes,
+            serialNumber = serialNumber,
+            ski = skiHex.hexToByteString(),
+            issuingAuthority = extras.issuingAuthority,
+            issuingCountry = principalName.country,
+            stateOrProvinceName = principalName.stateOrProvinceName,
+            issuer = extras.issuer,
+            subject = extras.subject,
+            notBefore = validityPeriod.notBefore,
+            notAfter = validityPeriod.notAfter,
+        )
+    }
+
+    /**
+     * Blocking variant of [toIACACertificateInfo].
+     */
+    fun toIACACertificateInfoBlocking(): IACACertificateInfo = blockingBridge {
+        toIACACertificateInfo()
+    }
 
     /**
      * Verify the certificate signature.

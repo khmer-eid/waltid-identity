@@ -1,15 +1,17 @@
+@file:OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+
 package id.walt.openid4vp.clientidprefix.prefixes
 
-import id.walt.crypto.keys.jwk.JWKKey
 import id.walt.crypto.utils.Base64Utils.decodeFromBase64
 import id.walt.crypto.utils.Base64Utils.encodeToBase64Url
-import id.walt.crypto.utils.JwsUtils.decodeJws
+import id.walt.crypto2.jose.CompactJws
 import id.walt.openid4vp.clientidprefix.ClientIdError
+import id.walt.openid4vp.clientidprefix.ClientIdTrustConfiguration
 import id.walt.openid4vp.clientidprefix.ClientValidationResult
 import id.walt.openid4vp.clientidprefix.RequestContext
-import id.walt.verifier.openid.models.authorization.ClientMetadata
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import org.kotlincrypto.hash.sha2.SHA256
 
@@ -24,34 +26,74 @@ data class X509Hash(val hash: String, override val rawValue: String) : ClientId 
         require(b64UrlRegex.matches(hash)) { "Hash must be a valid Base64URL string." }
     }
 
+    companion object {
+        /**
+         * Derive the `x509_hash` client identifier value from the DER encoding of a leaf
+         * certificate: the base64url-encoded SHA-256 hash, per OpenID4VP 1.0, Section 5.9.3.
+         *
+         * Shared so that producing a `client_id` and verifying one cannot drift apart.
+         */
+        fun hashOfCertificate(leafCertificateDer: ByteArray): String =
+            SHA256().digest(leafCertificateDer).encodeToBase64Url()
+
+        /** Full `x509_hash:<hash>` client identifier for the given DER-encoded leaf certificate. */
+        fun clientIdForCertificate(leafCertificateDer: ByteArray): String =
+            "x509_hash:${hashOfCertificate(leafCertificateDer)}"
+    }
+
     suspend fun authenticateX509Hash(clientId: X509Hash, context: RequestContext): ClientValidationResult {
+        return authenticateX509Hash(clientId, context, ClientIdTrustConfiguration())
+    }
+
+    suspend fun authenticateX509Hash(
+        clientId: X509Hash,
+        context: RequestContext,
+        trustConfiguration: ClientIdTrustConfiguration,
+    ): ClientValidationResult {
         val jws = context.requestObjectJws
             ?: return ClientValidationResult.Failure(ClientIdError.MissingRequestObject)
+        if (trustConfiguration.x509TrustAnchors == null) {
+            return ClientValidationResult.Failure(ClientIdError.MissingX509TrustAnchors)
+        }
 
-        return runCatching {
-            val x5cHeader = jws.decodeJws().header["x5c"]?.jsonArray
-                ?: throw IllegalStateException("Missing 'x5c' header in JWS.")
-
-            val leafCertDer = x5cHeader.first().jsonPrimitive.content.decodeFromBase64()
-
-            // 1. Verify JWS signature.
-            JWKKey.importFromDerCertificate(leafCertDer).getOrThrow().verifyJws(jws).getOrThrow()
-
-            // 2. Calculate the certificate hash using the isolated JCA utility function.
-            val calculatedHash = SHA256().digest(leafCertDer).encodeToBase64Url()
-
-            // 3. Compare with the hash from the client_id.
-            if (clientId.hash != calculatedHash) {
-                throw IllegalArgumentException("Provided hash does not match certificate hash.")
+        val decoded = try {
+            CompactJws.decodeUnverified(jws)
+        } catch (_: Exception) {
+            return ClientValidationResult.Failure(ClientIdError.InvalidJws)
+        }
+        val x5cValue = decoded.protectedHeader["x5c"]
+            ?: return ClientValidationResult.Failure(ClientIdError.MissingX5cHeader)
+        val x5cHeader = x5cValue as? JsonArray
+            ?: return ClientValidationResult.Failure(ClientIdError.InvalidJws)
+        val certificates = try {
+            x5cHeader.map {
+                ClientIdCrypto2.parseCertificate(
+                    it.jsonPrimitive.content.decodeFromBase64()
+                )
             }
+        } catch (_: Exception) {
+            return ClientValidationResult.Failure(ClientIdError.InvalidJws)
+        }
+        val leafCertificate = certificates.firstOrNull()
+            ?: return ClientValidationResult.Failure(ClientIdError.EmptyX5cHeader)
 
-            val metadataJson = context.clientMetadataJson
-                ?: throw IllegalStateException("client_metadata parameter is required.")
-
-            ClientMetadata.fromJson(metadataJson).getOrThrow()
-        }.fold(
-            onSuccess = { ClientValidationResult.Success(it) },
-            onFailure = { ClientValidationResult.Failure(ClientIdError.X509HashMismatch) }
-        )
+        ClientIdCrypto2.validateCertificateChain(certificates, trustConfiguration.x509TrustStore)?.let { error ->
+            return error
+        }
+        try {
+            ClientIdCrypto2.verify(jws, leafCertificate.restoreSubjectPublicKey(ClientIdCrypto2.runtime))
+        } catch (cause: CancellationException) {
+            throw cause
+        } catch (_: Exception) {
+            return ClientValidationResult.Failure(ClientIdError.InvalidSignature)
+        }
+        // Via the shared helper rather than hashing inline: deriving an x509_hash client
+        // identifier and verifying one must not be able to drift apart.
+        val calculatedHash = hashOfCertificate(leafCertificate.encodedDer.toByteArray())
+        if (clientId.hash != calculatedHash) {
+            return ClientValidationResult.Failure(ClientIdError.X509HashMismatch)
+        }
+        return context.clientMetadata?.let(ClientValidationResult::Success)
+            ?: ClientValidationResult.Failure(ClientIdError.MissingClientMetadata)
     }
 }

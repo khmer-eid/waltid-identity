@@ -2,6 +2,9 @@ package id.walt.policies2.vp.policies
 
 import id.walt.verifier.openid.models.openid.OpenID4VPResponseMode
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
+import kotlin.time.Clock
+import kotlin.time.Instant
 
 /*sealed class VPVerificationRequest {
     abstract val base: BaseVerificationSessionContext
@@ -14,13 +17,24 @@ data class VerificationSessionContext(
     val expectedNonce: String,
     val expectedAudience: String?,
     val expectedOrigins: List<String>?,
+    val expectedTransactionData: List<String>? = null,
 
     val responseUri: String?,
     val responseMode: OpenID4VPResponseMode,
 
     val isSigned: Boolean,
     val isEncrypted: Boolean,
-    val jwkThumbprint: String?
+    val jwkThumbprint: String?,
+    val customData: JsonObject? = null,
+    val isAnnexC: Boolean,
+    val verificationTime: Instant = Clock.System.now(),
+
+    /**
+     * Base64url-encoded transaction data items from the authorization request's `transaction_data`
+     * parameter (OID4VP 1.0 §5.5.1). When non-null, the KB-JWT MUST contain `transaction_data_hashes`
+     * and the verifier MUST validate them against these values.
+     */
+    val transactionData: List<String>? = null,
 ) {
     val isDcApi
         get() = responseMode in OpenID4VPResponseMode.DC_API_RESPONSES

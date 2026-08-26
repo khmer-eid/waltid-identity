@@ -1,12 +1,17 @@
-@file:OptIn(ExperimentalTime::class)
-
 package id.walt.ktorauthnz.methods
 
 import id.walt.commons.web.InvalidChallengeException
 import id.walt.commons.web.Web3AuthException
-import id.walt.crypto.keys.KeyType
-import id.walt.crypto.keys.jwk.JWKKey
 import id.walt.crypto.utils.JwsUtils.decodeJws
+import id.walt.crypto2.CryptoRuntime
+import id.walt.crypto2.jose.CompactJws
+import id.walt.crypto2.jose.JwsAlgorithm
+import id.walt.crypto2.keys.EdwardsCurve
+import id.walt.crypto2.keys.KeyId
+import id.walt.crypto2.keys.KeySpec
+import id.walt.crypto2.keys.KeyUsage
+import id.walt.crypto2.providers.GenerateSoftwareKeyRequest
+import id.walt.crypto2.providers.cryptography.defaultSoftwareKeyProviders
 import id.walt.ktorauthnz.AuthContext
 import id.walt.ktorauthnz.accounts.identifiers.methods.Web3Identifier
 import id.walt.ktorauthnz.amendmends.AuthMethodFunctionAmendments
@@ -28,17 +33,20 @@ import org.web3j.utils.Numeric
 import java.math.BigInteger
 import java.security.SecureRandom
 import kotlin.time.Clock
-import kotlin.time.ExperimentalTime
 
-
-@OptIn(ExperimentalStdlibApi::class)
 object Web3 : AuthenticationMethod("web3") {
     private val log = logger<Web3>()
 
-    private val jwtHandler = JwtTokenHandler().apply {
-        signingKey = runBlocking { JWKKey.generate(KeyType.Ed25519) }
-        verificationKey = signingKey
+    private val nonceKey = runBlocking {
+        CryptoRuntime(defaultSoftwareKeyProviders()).generateSoftwareKey(
+            GenerateSoftwareKeyRequest(
+                id = KeyId("web3-nonce"),
+                spec = KeySpec.Edwards(EdwardsCurve.ED25519),
+                usages = setOf(KeyUsage.SIGN, KeyUsage.VERIFY),
+            )
+        )
     }
+    private val jwtHandler = JwtTokenHandler.crypto2(nonceKey, algorithm = JwsAlgorithm.ED25519)
     private const val NONCE_VALIDITY_SECONDS = 300L // 5 minutes
 
 
@@ -51,7 +59,7 @@ object Web3 : AuthenticationMethod("web3") {
             put("exp", JsonPrimitive(Clock.System.now().epochSeconds + NONCE_VALIDITY_SECONDS))
         }.toString().toByteArray()
 
-        return jwtHandler.signingKey.signJws(payload)
+        return CompactJws.sign(payload, nonceKey, JwsAlgorithm.ED25519)
     }
 
     override val supportsRegistration = true
@@ -89,7 +97,8 @@ object Web3 : AuthenticationMethod("web3") {
 
         val recoveredAddress = "0x" + Keys.getAddress(recoveredKey)
 
-        authCheck(recoveredAddress.equals(expectedAddress, ignoreCase = true) ,
+        authCheck(
+            recoveredAddress.equals(expectedAddress, ignoreCase = true),
             Web3AuthException("Recovered address ($recoveredAddress) does not match provided address (${expectedAddress})")
         )
 
@@ -102,7 +111,7 @@ object Web3 : AuthenticationMethod("web3") {
         val challenge = siweReq.challenge
         log.trace { "Challenge was: $challenge. Verifying challenge authenticity..." }
 
-        authCheck(jwtHandler.validateToken(challenge) , InvalidChallengeException())
+        authCheck(jwtHandler.validateToken(challenge), InvalidChallengeException())
         log.trace { "Challenge is authentic. Verifying challenge timestamp..." }
 
         val decodedJwt = challenge.decodeJws()

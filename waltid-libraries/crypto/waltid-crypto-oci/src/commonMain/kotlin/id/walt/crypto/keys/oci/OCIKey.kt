@@ -8,6 +8,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 
 @SerialName("oci")
+@Deprecated("Legacy v1 OCI SDK adapter; use OciKmsKeyProvider for new integrations")
 expect class OCIKey(
     id: String,
     config: OCIsdkMetadata,
@@ -36,17 +37,11 @@ expect class OCIKey(
     override suspend fun getMeta(): OciKeyMeta
 
     companion object {
-
-        // The KeyShape used for testing
         val DEFAULT_KEY_LENGTH: Int
         suspend fun generateKey(config: OCIsdkMetadata): OCIKey
-
-
+        suspend fun generateKey(type: KeyType, config: OCIsdkMetadata): OCIKey
     }
 
     val id: String
     val config: OCIsdkMetadata
-
-
-
 }

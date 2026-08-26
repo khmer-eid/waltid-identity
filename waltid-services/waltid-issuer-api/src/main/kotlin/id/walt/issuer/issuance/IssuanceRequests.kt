@@ -96,6 +96,38 @@ data class IssuanceRequest(
     val display: List<DisplayProperties>? = null,
     val draft11EncodeOfferedCredentialsByReference: Boolean? = true, //if set to false and only for standard version DRAFT11, offered credentials will be encoded by value, not by reference - required by EBSI Vector
     val issuanceType: String? = null, // IN_TIME, DEFERRED
+
+    /**
+     * Optional [credentialStatus](https://www.w3.org/TR/vc-data-model/#status) for W3C JWT VC payloads.
+     * When set, merged into [credentialData] before signing (overwriting an existing top-level `credentialStatus`).
+     */
+    val credentialStatus: JsonElement? = null,
+
+    /**
+     * Optional extra top-level claims merged into the SD-JWT VC payload before signing (after [credentialData], before mapping).
+     * Use for externally managed revocation metadata such as an IETF Token Status List [`status`](https://datatracker.ietf.org/doc/draft-ietf-oauth-status-list/) claim.
+     */
+    val sdJwtCredentialClaims: JsonObject? = null,
+
+    /**
+     * Optional Mobile Security Object status for mdoc (`status_list` **or** `identifier_list`; mutually exclusive).
+     * Matches the ISO/IEC 18013-5 MSO `status` structure encoded as JSON (see `waltid-mdoc-credentials` README).
+     */
+    val mdocStatus: JsonObject? = null,
+
+    /**
+     * Optional list of transaction data type identifiers that the device key is authorized to sign.
+     * Each type becomes a namespace in the MSO's KeyAuthorizations (per OpenID4VP transaction_data spec).
+     * Example: `["org.example.payment-authorization"]`
+     * When null, the credential does not support transaction data.
+     */
+    val authorizedTransactionDataTypes: List<String>? = null,
+
+    /**
+     * Validity period for mdoc credentials in days. Defaults to 365 days.
+     * Used to set the `validUntil` field in the MSO ValidityInfo.
+     */
+    val mdocValidityDays: Int? = null,
 ) {
 
     init {

@@ -1,13 +1,12 @@
-@file:OptIn(ExperimentalTime::class)
-
 package id.walt.x509.iso.documentsigner.certificate
 
 import id.walt.crypto.keys.Key
+import id.walt.crypto2.keys.EncodedKey
 import id.walt.x509.*
 import id.walt.x509.iso.IssuerAlternativeName
 import id.walt.x509.iso.iaca.certificate.IACAPrincipalName
-import okio.ByteString
-import kotlin.time.ExperimentalTime
+import kotlinx.io.bytestring.ByteString
+
 
 /**
  * Decoded view (not validated) of a Document Signer X.509 certificate.
@@ -31,11 +30,22 @@ data class DocumentSignerDecodedCertificate internal constructor(
     val akiHex: String,
     val skiHex: String,
     val basicConstraints: X509BasicConstraints,
+    @Deprecated("Use crypto2PublicKey().", ReplaceWith("crypto2PublicKey()"))
     val publicKey: Key,
     val criticalExtensionOIDs: Set<X509V3ExtensionOID>,
     val nonCriticalExtensionOIDs: Set<X509V3ExtensionOID>,
     private val certificate: X509CertificateHandle,
 ) {
+
+    /**
+     * Subject public key as a crypto2 JWK.
+     *
+     * The crypto2 replacement for [publicKey], matching
+     * [id.walt.x509.GenericX509DecodedCertificate.crypto2PublicKey]. Previously only the deprecation
+     * on [publicKey] named it, so callers following that advice did not compile.
+     */
+    @Suppress("DEPRECATION")
+    suspend fun crypto2PublicKey(): EncodedKey.Jwk = publicKey.toCrypto2PublicJwk()
 
     /**
      * Convert the decoded certificate into the specification's profile data shape.

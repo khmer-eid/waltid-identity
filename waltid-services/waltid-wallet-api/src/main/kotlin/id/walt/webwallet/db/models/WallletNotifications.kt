@@ -1,5 +1,3 @@
-@file:OptIn(ExperimentalTime::class)
-
 package id.walt.webwallet.db.models
 
 import id.walt.webwallet.db.kotlinxUuid
@@ -11,12 +9,9 @@ import kotlinx.serialization.json.jsonObject
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.dao.id.UUIDTable
 import org.jetbrains.exposed.v1.javatime.timestamp
-import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
 import kotlin.time.toKotlinInstant
-import kotlin.uuid.ExperimentalUuidApi
 
-@OptIn(ExperimentalUuidApi::class)
 object WalletNotifications : UUIDTable("notifications") {
     //TODO: change to reference username
     val account = kotlinxUuid("account")
@@ -27,7 +22,6 @@ object WalletNotifications : UUIDTable("notifications") {
     val data = text("data")
 }
 
-@OptIn(ExperimentalUuidApi::class)
 @Serializable
 data class Notification(
     val id: String? = null,

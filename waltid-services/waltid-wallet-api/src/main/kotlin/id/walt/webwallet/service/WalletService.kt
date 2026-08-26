@@ -19,10 +19,8 @@ import id.walt.webwallet.web.parameter.CredentialRequestParameter
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
-@OptIn(ExperimentalUuidApi::class)
 abstract class WalletService(val tenant: String, val accountId: Uuid, val walletId: Uuid) {
 
     // WalletCredentials
@@ -37,11 +35,12 @@ abstract class WalletService(val tenant: String, val accountId: Uuid, val wallet
     abstract suspend fun detachCategory(credentialId: String, categories: List<String>): Boolean
     abstract suspend fun renameCategory(oldName: String, newName: String): Boolean
     abstract fun getCredentialsByIds(credentialIds: List<String>): List<WalletCredential>
-
+    abstract suspend fun importCredential(credential: String, associatedDid: String): WalletCredential
     // SIOP
     abstract suspend fun usePresentationRequest(parameter: PresentationRequestParameter): Result<String?>
 
     abstract suspend fun resolvePresentationRequest(request: String): String
+    abstract suspend fun matchCredentialsForPresentationRequest(request: String): List<WalletCredential>
     abstract suspend fun resolveCredentialOffer(offerRequest: CredentialOfferRequest): CredentialOffer
 
     abstract suspend fun resolveVct(vct: String): SdJwtVcTypeMetadataDraft04

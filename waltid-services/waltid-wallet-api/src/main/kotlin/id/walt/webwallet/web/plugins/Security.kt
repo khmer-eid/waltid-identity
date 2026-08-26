@@ -120,16 +120,20 @@ val walletAuthenticationPluginAmendment: suspend () -> Unit = suspend {
             KtorAuthnzConfig.AuthnzTokens.STORE_IN_MEMORY -> {
                 KtorAuthNzTokenHandler().apply { tokenStore = InMemoryKtorAuthNzTokenStore() }
             }
-            KtorAuthnzConfig.AuthnzTokens.STORE_VALKEY ->{
-                KtorAuthNzTokenHandler().apply { tokenStore = ValkeyAuthnzTokenStore(
-                    unixsocket = config.valkeyUnixSocket,
-                    host = config.valkeyHost,
-                    port = config.valkeyPort,
-                    expiration = configuredExpiration,
-                    username = config.valkeyAuthUsername,
-                    password = config.valkeyAuthPassword,
-                ).also { it.tryConnect() } }
+
+            KtorAuthnzConfig.AuthnzTokens.STORE_VALKEY -> {
+                KtorAuthNzTokenHandler().apply {
+                    tokenStore = ValkeyAuthnzTokenStore(
+                        unixsocket = config.valkeyUnixSocket,
+                        host = config.valkeyHost,
+                        port = config.valkeyPort,
+                        expiration = configuredExpiration,
+                        username = config.valkeyAuthUsername,
+                        password = config.valkeyAuthPassword,
+                    ).also { it.tryConnect() }
+                }
             }
+
             KtorAuthnzConfig.AuthnzTokens.JWT -> {
                 JwtTokenHandler().apply {
                     val configSigningKey = config.configuredSigningKey
@@ -154,6 +158,7 @@ val walletAuthenticationPluginAmendment: suspend () -> Unit = suspend {
                     expiration = configuredExpiration
                 ).also { it.tryConnect() }
             }
+
             else -> InMemorySessionStore()
         }
 
@@ -176,6 +181,7 @@ val walletAuthenticationPluginAmendment: suspend () -> Unit = suspend {
             if (FeatureManager.isFeatureEnabled(FeatureCatalog.legacyAuthenticationFeature)) {
                 oauth("auth-oauth") {
                     client = HttpClient()
+                    // Ktor 3.4.x: providerLookup is now a suspend function
                     providerLookup = {
                         OAuthServerSettings.OAuth2ServerSettings(
                             name = oidcConfig.providerName,
@@ -206,7 +212,8 @@ val walletAuthenticationPluginAmendment: suspend () -> Unit = suspend {
                             }
                         }
                     }
-                    urlProvider = { "${oidcConfig.publicBaseUrl}/wallet-api/auth/oidc-session" }
+                    // Ktor 3.4.x: urlProvider is now a suspend function with OAuthServerSettings parameter
+                    urlProvider = { _ -> "${oidcConfig.publicBaseUrl}/wallet-api/auth/oidc-session" }
                 }
 
 
@@ -242,7 +249,9 @@ val walletAuthenticationPluginAmendment: suspend () -> Unit = suspend {
                                 }.build()
                                 val resp = http.submitForm(oidcConfig.accessTokenUrl, parameters)
 
-                                val idToken = resp.body<JsonObject>()["id_token"]?.jsonPrimitive?.content ?: throw IllegalArgumentException("OIDC Login failed: Missing id_token from token endpoint response")
+                                val idToken = resp.body<JsonObject>()["id_token"]?.jsonPrimitive?.content ?: throw IllegalArgumentException(
+                                    "OIDC Login failed: Missing id_token from token endpoint response"
+                                )
 
                                 call.sessions.set(OidcTokenSession(idToken))
                                 call.respondRedirect("/login?oidc_login=true")

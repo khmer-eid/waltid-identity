@@ -1,18 +1,16 @@
 plugins {
     id("com.android.application")
-    kotlin("android")
-    kotlin("plugin.serialization")
-    kotlin("plugin.compose")
-    id("com.github.ben-manes.versions")
+    id("org.jetbrains.kotlin.plugin.serialization")
+    id("org.jetbrains.kotlin.plugin.compose")
 }
 
 android {
     namespace = "id.walt.androidSample"
-    compileSdk = 35
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "id.walt.androidSample"
-        minSdk = 28
+        minSdk = 30
         targetSdk = 35
         versionCode = 1
         versionName = "1.0"
@@ -23,48 +21,36 @@ android {
         }
     }
 
-    configurations {
-        all {
-            exclude(group = "org.bouncycastle", module = "bcprov-lts8on")
-        }
-    }
-
     buildTypes {
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
+
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_1_8
-        targetCompatibility = JavaVersion.VERSION_1_8
+        sourceCompatibility = JavaVersion.VERSION_21
+        targetCompatibility = JavaVersion.VERSION_21
     }
-    kotlinOptions {
-        jvmTarget = "1.8"
-    }
-    buildFeatures {
-        compose = true
-    }
-    composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.12"
-    }
+
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
             excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
+            excludes += "META-INF/DEPENDENCIES"
         }
     }
 }
 
 dependencies {
     // walt.id
-    api(project(":waltid-libraries:crypto:waltid-crypto-android"))
+    api(project(":waltid-libraries:crypto:waltid-crypto"))
     api(project(":waltid-libraries:waltid-did"))
     api(project(":waltid-libraries:credentials:waltid-w3c-credentials"))
     api(project(":waltid-libraries:sdjwt:waltid-sdjwt"))
 
     // JSON
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
+    implementation(identityLibs.kotlinx.serialization.json)
 
     // -- Android --
     implementation("androidx.biometric:biometric:1.2.0-alpha05")

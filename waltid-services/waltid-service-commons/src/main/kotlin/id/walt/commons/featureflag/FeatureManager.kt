@@ -13,6 +13,7 @@ object FeatureManager {
     val enabledFeatures = HashSet<String>()
     val disabledFeatures = HashSet<String>()
     val registeredFeatures = HashMap<String, AbstractFeature>()
+    val deprecatedFeatures = HashSet<String>()
 
     private val failed = ArrayList<Pair<AbstractFeature, Throwable>>()
 
@@ -22,15 +23,20 @@ object FeatureManager {
         enabledFeatures.clear()
         disabledFeatures.clear()
         registeredFeatures.clear()
+        deprecatedFeatures.clear()
         failed.clear()
         featureAmendments.clear()
     }
 
     private val log = logger("FeatureManager")
 
-    suspend fun enableFeatureAndIfNotSucceededRun(feature: AbstractFeature, ifNotSucceeded: (AbstractFeature, Throwable) -> Unit = { _, _ -> }) {
-        enableFeature (feature).ifResultNotSucceeded(feature) { ex -> ifNotSucceeded.invoke(feature, ex) }
+    suspend fun enableFeatureAndIfNotSucceededRun(
+        feature: AbstractFeature,
+        ifNotSucceeded: (AbstractFeature, Throwable) -> Unit = { _, _ -> }
+    ) {
+        enableFeature(feature).ifResultNotSucceeded(feature) { ex -> ifNotSucceeded.invoke(feature, ex) }
     }
+
     suspend fun enableFeature(feature: AbstractFeature): Result<Boolean> {
         feature.dependsOn // todo: handle this
 
@@ -57,10 +63,21 @@ object FeatureManager {
             it.invoke()
         }
 
-        return when {
-            enabledFeatures.add(feature.name) -> Result.success(true)
-            else -> Result.failure(IllegalStateException("Feature \"${feature.name}\" already enabled."))
+        if (!enabledFeatures.add(feature.name)) {
+            return Result.failure(IllegalStateException("Feature \"${feature.name}\" already enabled."))
         }
+
+        try {
+            feature.onEnable?.let {
+                log.info { "Enabling feature \"${feature.name}\"..." }
+                it.invoke()
+            }
+        } catch (ex: Throwable) {
+            enabledFeatures.remove(feature.name)
+            return Result.failure(ex)
+        }
+
+        return Result.success(true)
     }
 
     fun disableFeature(feature: AbstractFeature) {
@@ -71,7 +88,7 @@ object FeatureManager {
         return enabledFeatures.contains(featureName) || (!disabledFeatures.contains(featureName) && when (val registeredFeature =
             registeredFeatures[featureName]) {
             is BaseFeature -> true
-            is OptionalFeature -> registeredFeature.default
+            is OptionalFeature -> registeredFeature.default.value
             else -> false
         })
     }
@@ -118,6 +135,7 @@ object FeatureManager {
     suspend fun registerCatalog(catalog: ServiceFeatureCatalog) {
         registerBaseFeatures(catalog.baseFeatures)
         registerOptionalFeatures(catalog.optionalFeatures)
+        registerDeprecatedFeatures(catalog.deprecatedFeatures)
     }
 
     suspend fun registerCatalogs(catalogs: List<ServiceFeatureCatalog>) {
@@ -127,10 +145,25 @@ object FeatureManager {
         catalogs.forEach { catalog ->
             registerOptionalFeatures(catalog.optionalFeatures)
         }
+        catalogs.forEach { catalog ->
+            registerDeprecatedFeatures(catalog.deprecatedFeatures)
+        }
     }
 
     fun registerFeature(feature: AbstractFeature) {
         registeredFeatures[feature.name] = feature
+    }
+
+    fun registerDeprecatedFeatures(names: Collection<String>) {
+        deprecatedFeatures.addAll(names)
+    }
+
+    fun configuredFeature(name: String, action: String): AbstractFeature? {
+        registeredFeatures[name]?.let { return it }
+        check(name in deprecatedFeatures) {
+            "Could not $action feature \"$name\" as it's not loaded/registered by any catalog. Registered features are: ${registeredFeatures.keys}"
+        }
+        return null
     }
 
     fun getDefaultedFeatures() =
@@ -160,8 +193,12 @@ object FeatureManager {
         val config = ConfigManager.getConfig<FeatureConfig>()
 
         config.disabledFeatures.forEach { name ->
-            registeredFeatures[name]?.let { disableFeature(it) }
-                ?: error("Could not disable feature \"$name\" as it's not loaded/registered by any catalog. Registered features are: ${registeredFeatures.keys}")
+            val feature = configuredFeature(name, "disable")
+            if (feature == null) {
+                log.warn { "Ignoring deprecated feature flag \"$name\" listed in disabledFeatures. This flag no longer has any effect and can be removed from the configuration." }
+            } else {
+                disableFeature(feature)
+            }
         }
         log.info { "Disabled features (${disabledFeatures.size}): ${disabledFeatures.joinToString()}" }
 
@@ -175,17 +212,19 @@ object FeatureManager {
         }
 
         config.enabledFeatures.forEach { name ->
-            registeredFeatures[name]?.let { feature ->
+            val feature = configuredFeature(name, "enable")
+            if (feature == null) {
+                log.warn { "Ignoring deprecated feature flag \"$name\" listed in enabledFeatures. This flag no longer has any effect and can be removed from the configuration." }
+            } else {
                 log.info { "Enabling feature \"${feature.name}\"..." }
                 enableFeatureAndIfNotSucceededRun(feature) { _, ex -> failed += feature to ex }
             }
-                ?: error("Could not enable feature \"$name\" as it's not loaded/registered by any catalog. Registered features are: ${registeredFeatures.keys}")
         }
         log.info { "Enabled features (${enabledFeatures.size}): ${enabledFeatures.joinToString()}" }
 
         log.info { "Defaulted features (${getDefaultedFeatures().size}): ${getDefaultedFeatures().joinToString()}" }
         getDefaultedAbstractFeatures().forEach { feature ->
-            if ((feature is BaseFeature || (feature is OptionalFeature && feature.default)) && !failed.any { it.first == feature }) {
+            if (feature.shouldDefaultEnable() && !failed.any { it.first == feature }) {
                 log.info { "Enabling default feature \"${feature.name}\"..." }
                 enableFeatureAndIfNotSucceededRun(feature) { _, ex ->
                     failed += feature to ex

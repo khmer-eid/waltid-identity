@@ -2,6 +2,8 @@ package id.walt.did.dids.registrar.local.web
 
 import id.walt.crypto.keys.Key
 import id.walt.crypto.keys.KeyType
+import id.walt.crypto.keys.PublicKeyIds.publicJwkForPublish
+import id.walt.crypto.keys.PublicKeyIds.publicKeyId
 import id.walt.crypto.keys.jwk.JWKKey
 import id.walt.crypto.utils.UuidUtils.randomUUIDString
 import id.walt.did.dids.document.DidDocument
@@ -36,19 +38,19 @@ class DidWebRegistrar : LocalRegistrarMethod("web") {
     @JsPromise
     @JsExport.Ignore
     override suspend fun registerByKey(key: Key, options: DidCreateOptions): DidResult {
-            val domain = getUrlEncodedDomainOrThrow(options)
-            val path = getPath(options)
-            val did = getDid(domain, path)
-            return DidResult(
-                did,
-                DidDocument(
-                    DidWebDocument(
-                        did = did,
-                        keyId = key.getKeyId(),
-                        didKey = key.getPublicKey().exportJWKObject()
-                    ).toMap()
-                ),
-            )
+        val domain = getUrlEncodedDomainOrThrow(options)
+        val path = getPath(options)
+        val did = getDid(domain, path)
+        return DidResult(
+            did,
+            DidDocument(
+                DidWebDocument(
+                    did = did,
+                    keyId = key.publicKeyId(),
+                    didKey = key.publicJwkForPublish()
+                ).toMap()
+            ),
+        )
     }
 
     private suspend fun registerByDidDocConfig(

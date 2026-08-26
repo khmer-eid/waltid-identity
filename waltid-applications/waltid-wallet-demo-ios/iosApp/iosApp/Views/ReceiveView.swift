@@ -1,0 +1,129 @@
+import SwiftUI
+import WalletDemoSharingUI
+
+struct ReceiveView: View {
+    @ObservedObject var viewModel: WalletViewModel
+    @Binding var selectedDetailsID: String?
+    @Environment(\.openURL) private var openURL
+    @Environment(\.walletDemoBranding) private var branding
+
+    private var receivedDetails: [CredentialDetails] {
+        viewModel.receivedCredentials.map(CredentialDisplayNormalizer.details(for:))
+    }
+
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    if viewModel.offerPreview == nil {
+                        ScannableUrlEditor(
+                            title: "Receive",
+                            label: "Credential offer URL",
+                            text: $viewModel.offerUrl,
+                            inputIdentifier: WalletAccessibilityID.offerInput,
+                            scanButtonIdentifier: WalletAccessibilityID.offerScanButton,
+                            isEnabled: viewModel.receiveUrlEntryEnabled,
+                            focusResetKey: viewModel.inputFocusResetKey
+                        )
+
+                        Button("Receive") {
+                            viewModel.previewOffer()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(branding.primary)
+                        .disabled(!viewModel.receiveActionEnabled)
+                        .accessibilityIdentifier(WalletAccessibilityID.receiveButton)
+                    }
+
+                    WalletTabStatusBanner(viewModel: viewModel, tab: .receive)
+
+                    if let preview = viewModel.offerPreview {
+                        OfferReviewView(
+                            preview: preview,
+                            isAcceptEnabled: viewModel.acceptOfferEnabled,
+                            isReviewEnabled: viewModel.offerReviewEnabled,
+                            txCode: viewModel.txCode,
+                            onTxCodeChange: viewModel.updateTxCode,
+                            onAccept: viewModel.acceptOffer,
+                            onDecline: viewModel.declineOffer
+                        )
+                    }
+
+                    if let warning = viewModel.transactionDataProfilesWarning {
+                        WarningBannerView(message: warning)
+                    }
+
+                    if !viewModel.deferredCredentials.isEmpty {
+                        Text("Pending credentials")
+                            .font(.subheadline.weight(.semibold))
+                        ForEach(viewModel.deferredCredentials, id: \.id) { credential in
+                            Button("Check \(credential.credentialConfigurationID)") {
+                                viewModel.resumeDeferredCredential(credential)
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(viewModel.isLoading)
+                        }
+                    }
+
+                    if viewModel.receiveCompleted {
+                        Button("New receive", action: viewModel.startNewReceiveFlow)
+                            .buttonStyle(.bordered)
+                            .accessibilityIdentifier(WalletAccessibilityID.receiveNewButton)
+
+                        Text("Received credentials")
+                            .font(.subheadline.weight(.semibold))
+
+                        ForEach(receivedDetails) { item in
+                            CredentialCardButton(details: item) {
+                                selectedDetailsID = item.id
+                            }
+                        }
+                    }
+                }
+                .padding()
+            }
+            .navigationTitle("Receive")
+            .walletSettingsToolbar(viewModel: viewModel)
+            .background(detailsNavigationLink)
+            .accessibilityIdentifier(WalletAccessibilityID.receiveTabContent)
+        }
+        .navigationViewStyle(.stack)
+        .onChange(of: viewModel.authorizationRequestURL) { authorizationURL in
+            guard let authorizationURL else { return }
+            openURL(authorizationURL)
+            viewModel.authorizationRequestOpened()
+        }
+    }
+
+    private var detailsNavigationLink: some View {
+        NavigationLink(
+            destination: detailsDestination,
+            isActive: Binding(
+                get: { selectedDetailsID != nil },
+                set: { isActive in
+                    if !isActive {
+                        selectedDetailsID = nil
+                    }
+                }
+            )
+        ) {
+            EmptyView()
+        }
+        .hidden()
+    }
+
+    private var detailsDestination: some View {
+        Group {
+            if let detailsID = selectedDetailsID {
+                CredentialDetailsDestination(
+                    detailsID: detailsID,
+                    details: receivedDetails,
+                    viewModel: viewModel,
+                    selectedDetailsID: $selectedDetailsID
+                )
+            } else {
+                EmptyView()
+            }
+        }
+    }
+}

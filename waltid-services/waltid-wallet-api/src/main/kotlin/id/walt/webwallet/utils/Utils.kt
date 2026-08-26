@@ -4,9 +4,7 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import java.io.InputStream
-import java.util.*
-
-@OptIn(ExperimentalStdlibApi::class)
+import java.util.Base64
 object StringUtils {
     fun hexToInt(hex: String) = hex.removePrefix("0x").hexToInt()
     fun hexToByteArray(hex: String) = hex.removePrefix("0x").hexToByteArray()
@@ -42,26 +40,19 @@ object BitstringUtils {
         inputStream.use { stream ->
             if (stream.markSupported()) {
                 stream.mark(Int.MAX_VALUE)
-                logger.debug { "available bytes: ${bitmap(stream.readAllBytes())}" }
                 inputStream.reset()
             }
             //TODO: bitSize constraints
             val bitStartPosition = index * bitSize.toUInt()
-            logger.debug { "bitStartPosition overall: $bitStartPosition" }
             val byteStart = bitStartPosition / BITS_PER_BYTE_UNSIGNED
-            logger.debug { "skipping: $byteStart bytes" }
             stream.skip(byteStart.toLong())
-            logger.debug { "available: ${stream.available()} bytes" }
             val bytesToRead = (bitSize - 1) / BITS_PER_BYTE_UNSIGNED.toInt() + 1
-            logger.debug { "readingNext: $bytesToRead bytes" }
             extractBitValue(stream.readNBytes(bytesToRead), index, bitSize.toUInt())
         }
 
     private fun extractBitValue(bytes: ByteArray, index: ULong, bitSize: UInt): List<Char> {
-        logger.debug { "selected byte: ${bitmap(bytes)}" }
         val bits = bytes.toBitSequence()
         val bitStartPosition = index * bitSize % BITS_PER_BYTE_UNSIGNED
-        logger.debug { "bitStartPosition within byte: $bitStartPosition" }
         val bitSet = bits.drop(bitStartPosition.toInt()).iterator()
         val result = mutableListOf<Boolean>()
         var b = 0u

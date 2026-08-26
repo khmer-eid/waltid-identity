@@ -20,6 +20,7 @@ data class RegexPolicy(
     override val id = "regex"
 
     @Serializable
+    @SerialName("CredentialDataMatcherResult")
     data class CredentialDataMatcherResult(
         val value: String?,
         val groups: List<String>? = null
@@ -27,7 +28,10 @@ data class RegexPolicy(
         fun toJson() = Json.encodeToJsonElement(this)
     }
 
-    override suspend fun verify(credential: DigitalCredential): Result<JsonElement> {
+    override suspend fun verify(
+        credential: DigitalCredential,
+        context: PolicyExecutionContext
+    ): Result<JsonElement> {
         val regex = when {
             regexOptions != null -> Regex(regex, regexOptions)
             else -> Regex(regex)

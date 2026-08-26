@@ -1,4 +1,4 @@
-@file:OptIn(ExperimentalTime::class)
+@file:OptIn(ExperimentalSerializationApi::class)
 
 package id.waltid.openid4vp.wallet
 
@@ -6,56 +6,75 @@ import id.walt.credentials.formats.DigitalCredential
 import id.walt.credentials.signatures.sdjwt.SdJwtSelectiveDisclosure
 import id.walt.crypto.keys.Key
 import id.walt.crypto.utils.ShaUtils.calculateSha256Base64Url
+import id.walt.crypto2.jose.*
+import id.walt.crypto2.keys.EncodedKey
 import id.walt.dcql.DcqlMatcher
 import id.walt.dcql.RawDcqlCredential
+import id.walt.dcql.models.CredentialFormat
 import id.walt.dcql.models.DcqlQuery
 import id.walt.holderpolicies.HolderPolicy
 import id.walt.holderpolicies.HolderPolicyEngine
+import id.walt.openid4vp.clientidprefix.ClientIdTrustConfiguration
+import id.walt.sdjwt.SDJwt
 import id.walt.verifier.openid.models.authorization.AuthorizationRequest
 import id.walt.verifier.openid.models.openid.OpenID4VPResponseMode
 import id.walt.verifier.openid.models.openid.OpenID4VPResponseType
-import id.waltid.openid4vp.wallet.presentation.LDPPresenter
-import id.waltid.openid4vp.wallet.presentation.MdocPresenter
-import id.waltid.openid4vp.wallet.presentation.SdJwtVcPresenter
-import id.waltid.openid4vp.wallet.presentation.W3CPresenter
+import id.walt.verifier.openid.transactiondata.TransactionDataTypeRegistry
+import id.walt.verifier.openid.transactiondata.calculateTransactionDataHashes
+import id.walt.verifier.openid.transactiondata.decodeList
+import id.walt.verifier.openid.transactiondata.resolveHashAlgorithm
+import id.walt.verifier.openid.transactiondata.validateRequestTransactionData
+import id.walt.webdatafetching.WebDataFetcher
+import id.walt.webdatafetching.WebDataFetcherId
+import id.waltid.openid4vp.wallet.WalletPresentFunctionality2.isLegacyPresentationDefinitionRequest
+import id.waltid.openid4vp.wallet.WalletPresentFunctionality2.legacyFallbackResult
+import id.waltid.openid4vp.wallet.WalletPresentFunctionality2.resolveAndValidateAuthorizationRequest
+import id.waltid.openid4vp.wallet.WalletPresentFunctionality2.validateAuthorizationRequest
+import id.waltid.openid4vp.wallet.presentation.*
+import id.waltid.openid4vp.wallet.request.AuthorizationRequestResolver
+import id.waltid.openid4vp.wallet.request.ResolvedAuthorizationRequest
+import id.waltid.openid4vp.wallet.response.ResponseEncryption
 import io.github.oshai.kotlinlogging.KotlinLogging
-import io.ktor.client.*
-import io.ktor.client.call.*
-import io.ktor.client.plugins.contentnegotiation.*
-import io.ktor.client.request.*
-import io.ktor.client.request.forms.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
-import io.ktor.serialization.kotlinx.json.*
 import io.ktor.util.*
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.asFlow
 import kotlinx.coroutines.flow.filter
+import kotlinx.serialization.ExperimentalSerializationApi
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.*
 import kotlin.time.Clock
-import kotlin.time.ExperimentalTime
+import id.walt.crypto2.keys.Key as Crypto2Key
+
 
 object WalletPresentFunctionality2 {
 
     private val log = KotlinLogging.logger { }
 
-    private val http = HttpClient {
-        install(ContentNegotiation) {
-            json()
-        }
-    }
+    private val webResolveAuthReq = WebDataFetcher(WebDataFetcherId.OPENID4VP_WALLET_RESOLVE_AUTHORIZATIONREQUEST)
+    private val webPostToken = WebDataFetcher(WebDataFetcherId.OPENID4VP_WALLET_POST_TOKEN)
 
     /**
      * @param matchedData: Credentials that were choosen by the DCQL query
      */
-    private suspend fun generateVpTokenForRequest(
+    internal suspend fun generateVpTokenForRequest(
         authorizationRequest: AuthorizationRequest,
         matchedData: Map<String, List<DcqlMatcher.DcqlMatchResult>>,
         /** For mdocs: this is the device key */
-        holderKey: Key,
-        holderDid: String?
+        holderKey: Key?,
+        holderDid: String?,
+        typeRegistry: TransactionDataTypeRegistry,
+        verifierJwkThumbprint: String?,
+        holderCrypto2Key: Crypto2Key?,
+        /** The platform-asserted DC API origin; null for redirect/direct-post flows. */
+        dcApiOrigin: String? = null,
     ): String {
         val vpTokenMapContents = mutableMapOf<String, JsonArray>()
+        // OID4VP 1.0 Appendix A: DC API holder binding is to the platform-asserted origin.
+        val holderBindingAudience = dcApiOrigin?.let { "origin:$it" }
 
         for ((queryId, matchedCredsWithClaimsList) in matchedData) {
             log.trace { "Query ID: $queryId, matched credentials: $matchedCredsWithClaimsList" }
@@ -63,33 +82,71 @@ object WalletPresentFunctionality2 {
                 for (matchResult in matchedCredsWithClaimsList) {
                     val digitalCredential = (matchResult.credential as RawDcqlCredential).originalCredential as DigitalCredential
 
-                    val presentationStringOrObject: JsonElement = when (digitalCredential.format) {
-                        "jwt_vc_json" -> W3CPresenter.presentW3C(
-                            digitalCredential = digitalCredential,
-                            matchResult = matchResult,
-                            authorizationRequest = authorizationRequest,
-                            holderKey = holderKey,
-                            holderDid = holderDid ?: throw IllegalArgumentException("Missing DID for presentation")
-                        )
+                    val resolvedFormat = WalletPresentationFormatRegistry.resolve(digitalCredential.format)
+                    val presentationStringOrObject: JsonElement = when {
+                        resolvedFormat == WalletPresentationFormatRegistry.SupportedFormat.JWT_VC_JSON ->
+                            holderCrypto2Key?.let {
+                                W3CPresenter.presentW3C(
+                                    digitalCredential,
+                                    matchResult,
+                                    authorizationRequest,
+                                    it,
+                                    holderDid ?: throw IllegalArgumentException("Missing DID for presentation"),
+                                    holderBindingAudience,
+                                )
+                            } ?: W3CPresenter.presentW3C(
+                                digitalCredential,
+                                matchResult,
+                                authorizationRequest,
+                                requireNotNull(holderKey),
+                                holderDid ?: throw IllegalArgumentException("Missing DID for presentation"),
+                                holderBindingAudience,
+                            )
 
-                        "ldp_vc" -> LDPPresenter.presentLdpTodo()
+                        resolvedFormat == WalletPresentationFormatRegistry.SupportedFormat.DC_SD_JWT ->
+                            holderCrypto2Key?.let {
+                                SdJwtVcPresenter.presentSdJwtVc(
+                                    digitalCredential,
+                                    matchResult,
+                                    authorizationRequest,
+                                    it,
+                                    holderDid,
+                                    holderBindingAudience,
+                                )
+                            } ?: SdJwtVcPresenter.presentSdJwtVc(
+                                digitalCredential,
+                                matchResult,
+                                authorizationRequest,
+                                requireNotNull(holderKey),
+                                holderDid,
+                                holderBindingAudience,
+                            )
 
-                        "dc+sd-jwt" -> SdJwtVcPresenter.presentSdJwtVc(
-                            digitalCredential = digitalCredential,
-                            matchResult = matchResult,
-                            authorizationRequest = authorizationRequest,
-                            holderKey = holderKey,
-                            holderDid = holderDid ?: throw IllegalArgumentException("Missing DID for presentation")
-                        )
-
-                        "mso_mdoc" -> {
-                            MdocPresenter.presentMdoc(
-                                digitalCredential = digitalCredential,
-                                matchResult = matchResult,
-                                authorizationRequest = authorizationRequest,
-                                holderKey = holderKey
+                        resolvedFormat == WalletPresentationFormatRegistry.SupportedFormat.MSO_MDOC -> {
+                            holderCrypto2Key?.let {
+                                MdocPresenter.presentMdoc(
+                                    digitalCredential,
+                                    matchResult,
+                                    authorizationRequest,
+                                    it,
+                                    typeRegistry,
+                                    verifierJwkThumbprint,
+                                    dcApiOrigin,
+                                )
+                            } ?: MdocPresenter.presentMdoc(
+                                digitalCredential,
+                                matchResult,
+                                authorizationRequest,
+                                requireNotNull(holderKey),
+                                typeRegistry,
+                                verifierJwkThumbprint,
+                                null,
+                                dcApiOrigin,
                             )
                         }
+
+                        // Kept separate because ldp_vc presentation is not implemented yet.
+                        digitalCredential.format == CredentialFormat.LDP_VC.id.first() -> LDPPresenter.presentLdpTodo()
 
                         else ->
                             // Fallback for other formats or if it's a simple signed string
@@ -121,125 +178,434 @@ object WalletPresentFunctionality2 {
         return Json.encodeToString(JsonObject(vpTokenMapContents))
     }
 
-    suspend fun walletPresentHandling(
+    @Serializable
+    data class WalletPresentResult(
+        @SerialName("get_url")
+        val getUrl: String? = null,
+
+        @SerialName("form_post_html")
+        val formPostHtml: String? = null,
+
+
+        @SerialName("transmission_success")
+        val transmissionSuccess: Boolean? = null,
+        @SerialName("verifier_response")
+        val verifierResponse: JsonElement? = null,
+
+        @SerialName("redirect_to")
+        val redirectTo: String? = null
+    )
+
+    /**
+     * OpenID4VP 1.0 §8.5 wallet-side error codes (with RFC 6749 §4.1.2.1 / §4.2.2.1 parents).
+     *
+     * The verifier side accepts any `error` string (permissive); this typed enum only steers
+     * wallet-side callers away from typos in the finite set that the spec enumerates. If a
+     * future spec addition is needed before this enum is updated, use
+     * [walletRejectHandling]'s String overload.
+     */
+    enum class OID4VPErrorCode(val code: String) {
+        ACCESS_DENIED("access_denied"),
+        INVALID_REQUEST("invalid_request"),
+        INVALID_CLIENT("invalid_client"),
+        INVALID_SCOPE("invalid_scope"),
+        UNAUTHORIZED_CLIENT("unauthorized_client"),
+        UNSUPPORTED_RESPONSE_TYPE("unsupported_response_type"),
+        SERVER_ERROR("server_error"),
+        TEMPORARILY_UNAVAILABLE("temporarily_unavailable"),
+        VP_FORMATS_NOT_SUPPORTED("vp_formats_not_supported"),
+        INVALID_REQUEST_URI_METHOD("invalid_request_uri_method"),
+        INVALID_TRANSACTION_DATA("invalid_transaction_data"),
+        WALLET_UNAVAILABLE("wallet_unavailable"),
+    }
+
+    /**
+     * Produce an OpenID4VP 1.0 §8.5 wallet rejection response for the given
+     * [authorizationRequest]. The response is shaped according to the request's `response_mode`
+     * and carries `error`, optional `error_description`, and the request's `state` (when
+     * present). For `direct_post` and `direct_post.jwt`, the rejection is transmitted to the
+     * verifier's `response_uri` and the verifier's acknowledgement is returned. OpenID4VP 1.0
+     * permits an unencrypted error response for `direct_post.jwt` when the Wallet cannot generate
+     * the encrypted response.
+     */
+    suspend fun walletRejectHandling(
+        authorizationRequest: AuthorizationRequest,
+        error: OID4VPErrorCode = OID4VPErrorCode.ACCESS_DENIED,
+        errorDescription: String? = null,
+    ): Result<WalletPresentResult> = walletRejectHandling(authorizationRequest, error.code, errorDescription)
+
+    /**
+     * String overload of [walletRejectHandling] for forward-compatibility with error codes
+     * not yet in [OID4VPErrorCode]. Prefer the typed variant.
+     */
+    suspend fun walletRejectHandling(
+        authorizationRequest: AuthorizationRequest,
+        error: String,
+        errorDescription: String? = null,
+    ): Result<WalletPresentResult> = runCatching {
+        val responseMode = authorizationRequest.walletResponseMode()
+        val errorParameters = buildErrorResponseParameters(authorizationRequest, error, errorDescription)
+        val redirectUri = authorizationRequest.redirectUri
+        val responseUri = authorizationRequest.responseUri
+
+        when (responseMode) {
+            OpenID4VPResponseMode.FRAGMENT -> {
+                requireNotNull(redirectUri) { "Invalid AuthorizationRequest: 'redirect_uri' is required for response_mode 'fragment'." }
+                WalletPresentResult(getUrl = "${redirectUri}#${errorParameters.formUrlEncode()}")
+            }
+
+            OpenID4VPResponseMode.QUERY -> {
+                requireNotNull(redirectUri) { "Invalid AuthorizationRequest: 'redirect_uri' is required for response_mode 'query'." }
+                WalletPresentResult(getUrl = URLBuilder(redirectUri).apply { parameters.appendAll(errorParameters) }.buildString())
+            }
+
+            OpenID4VPResponseMode.FORM_POST -> {
+                requireNotNull(redirectUri) { "Invalid AuthorizationRequest: 'redirect_uri' is required for response_mode 'form_post'." }
+                WalletPresentResult(
+                    formPostHtml = buildFormPostHtml(
+                        actionUrl = redirectUri,
+                        title = "Submitting Error Response...",
+                        fields = errorParameters.entries().flatMap { (name, values) -> values.map { name to it } },
+                    )
+                )
+            }
+
+            OpenID4VPResponseMode.DIRECT_POST, OpenID4VPResponseMode.DIRECT_POST_JWT -> {
+                require(responseUri != null) { "Invalid AuthorizationRequest: 'response_uri' is required for response_mode '$responseMode'." }
+                postFormResponse(responseUri, errorParameters)
+            }
+
+            OpenID4VPResponseMode.DC_API, OpenID4VPResponseMode.DC_API_JWT ->
+                throw UnsupportedOperationException("OID4VP error responses are not supported for DC API response modes.")
+
+            null -> throw IllegalArgumentException("Missing response mode from AuthorizationRequest")
+        }
+    }
+
+    private fun buildErrorResponseParameters(
+        authorizationRequest: AuthorizationRequest,
+        error: String,
+        errorDescription: String?,
+    ): Parameters {
+        requireOAuthErrorValue("error", error)
+        errorDescription?.let { requireOAuthErrorValue("error_description", it) }
+
+        return ParametersBuilder().apply {
+            append("error", error)
+            errorDescription?.let { append("error_description", it) }
+            authorizationRequest.state?.let { append("state", it) }
+        }.build()
+    }
+
+    private fun requireOAuthErrorValue(parameter: String, value: String) {
+        require(value.isNotEmpty() && value.all(::isOAuthErrorCharacter)) {
+            "$parameter must contain only RFC 6749 error-response characters"
+        }
+    }
+
+    private fun isOAuthErrorCharacter(character: Char): Boolean =
+        character.code in 0x20..0x21 ||
+                character.code in 0x23..0x5B ||
+                character.code in 0x5D..0x7E
+
+    private suspend fun postFormResponse(
+        responseUri: String,
+        parameters: Parameters,
+    ): WalletPresentResult {
+        val response = webPostToken.sendForm(responseUri, parameters)
+        return directPostResult(response.status.isSuccess(), response.bodyAsText())
+    }
+
+    internal fun directPostResult(success: Boolean, responseBody: String): WalletPresentResult {
+        val responseBodyJson = responseBody.takeIf(String::isNotBlank)
+            ?.let { body -> runCatching { Json.parseToJsonElement(body) }.getOrElse { JsonPrimitive(body) } }
+            ?: JsonObject(emptyMap())
+
+        return WalletPresentResult(
+            transmissionSuccess = success,
+            verifierResponse = responseBodyJson,
+            redirectTo = (responseBodyJson as? JsonObject)?.get("redirect_uri")?.jsonPrimitive?.content,
+        )
+    }
+
+    /**
+     * Build a self-submitting `form_post` HTML page that POSTs [fields] to [actionUrl].
+     * Shared by [walletPresentHandling] (carrying `vp_token`) and [walletRejectHandling]
+     * (carrying `error` / `error_description` / `state`).
+     */
+    private fun buildFormPostHtml(
+        actionUrl: String,
+        title: String,
+        fields: List<Pair<String, String>>,
+    ): String = buildString {
+        appendLine("<!DOCTYPE html>")
+        appendLine("<html>")
+        appendLine("<head><title>${title.escapeHTML()}</title></head>")
+        appendLine("<body onload=\"document.forms[0].submit()\">")
+        appendLine("<noscript><p>Your browser does not support JavaScript. Please press the button below to continue.</p></noscript>")
+        appendLine("<form method=\"POST\" action=\"${actionUrl.escapeHTML()}\">")
+        fields.forEach { (name, value) ->
+            appendLine("<input type=\"hidden\" name=\"${name.escapeHTML()}\" value=\"${value.escapeHTML()}\"/>")
+        }
+        appendLine("<input type=\"submit\" value=\"Continue\"/>")
+        appendLine("</form>")
+        appendLine("</body>")
+        appendLine("</html>")
+    }
+
+    // ---------------------------------------------------------------------------
+    // Step-by-step presentation API
+    //
+    // The full flow is: resolveAuthorizationRequest -> (user selects credentials) ->
+    // buildVpToken -> sendAuthorizationResponse.
+    //
+    // Each step can be called independently so wallet UIs can interpose user-consent
+    // screens between steps. The combined [walletPresentHandling] function calls
+    // these steps internally and remains the preferred path for automated wallets.
+    // ---------------------------------------------------------------------------
+
+    /**
+     * Step 1 - Resolve and verify the OpenID4VP authorization request.
+     *
+     * Handles all request_uri transport cases including request_uri_method=post
+     * (wallet_nonce), signed JWT request objects (client ID prefix verification),
+     * and inline URL-encoded parameters.
+     *
+     * @param presentationRequestUrl The openid4vp:// or https:// URL containing or
+     *   referencing the authorization request.
+     * @param unsignedRequestObjectPolicy Whether to accept unsigned (alg=none) JWTs.
+     *   Defaults to [AuthorizationRequestResolver.UnsignedRequestObjectPolicy.REQUIRE_SIGNED].
+     * @param legacyFallbackCallback Optional fallback for requests carrying explicit legacy
+     *   `presentation_definition` or `presentation_definition_uri` parameters. Only consulted after
+     *   strict resolution has failed.
+     * @return The resolved and verified [AuthorizationRequest].
+     * @throws IllegalArgumentException if the request cannot be resolved or verified.
+     */
+    suspend fun resolveAuthorizationRequest(
+        presentationRequestUrl: Url,
+        unsignedRequestObjectPolicy: AuthorizationRequestResolver.UnsignedRequestObjectPolicy =
+            AuthorizationRequestResolver.UnsignedRequestObjectPolicy.REQUIRE_SIGNED,
+        legacyFallbackCallback: (suspend (Url) -> Result<JsonElement>)? = null,
+    ): AuthorizationRequest = resolveAuthorizationRequest(
+        presentationRequestUrl,
+        unsignedRequestObjectPolicy,
+        legacyFallbackCallback,
+        ClientIdTrustConfiguration(),
+    )
+
+    suspend fun resolveAuthorizationRequest(
+        presentationRequestUrl: Url,
+        unsignedRequestObjectPolicy: AuthorizationRequestResolver.UnsignedRequestObjectPolicy,
+        legacyFallbackCallback: (suspend (Url) -> Result<JsonElement>)?,
+        clientIdTrustConfiguration: ClientIdTrustConfiguration,
+    ): AuthorizationRequest = resolveAndValidateAuthorizationRequest(
+        presentationRequestUrl = presentationRequestUrl,
+        unsignedRequestObjectPolicy = unsignedRequestObjectPolicy,
+        clientIdTrustConfiguration = clientIdTrustConfiguration,
+        legacyFallbackCallback = legacyFallbackCallback,
+    ).authorizationRequest
+
+    private fun validateAuthorizationRequest(request: AuthorizationRequest) {
+        require(!request.clientId.isNullOrBlank()) { "Authorization Request client_id is required" }
+        require(!request.nonce.isNullOrBlank()) { "Authorization Request nonce is required" }
+        require(request.dcqlQuery != null) {
+            if (request.scope != null) {
+                "Scope-based DCQL is not configured for this wallet"
+            } else {
+                "Authorization Request must contain dcql_query"
+            }
+        }
+        if (request.responseMode in OpenID4VPResponseMode.DIRECT_POST_RESPONSES) {
+            require(request.redirectUri == null) {
+                "redirect_uri must not be present with response_mode=${request.responseMode}"
+            }
+            require(!request.responseUri.isNullOrBlank()) {
+                "response_uri is required with response_mode=${request.responseMode}"
+            }
+        }
+    }
+
+    /**
+     * Internal marker exception thrown by [resolveAndValidateAuthorizationRequest] when the legacy
+     * fallback path produced a result. [walletPresentHandling] catches it and turns it into a
+     * successful [WalletPresentResult]; the standalone [resolveAuthorizationRequest] step lets it
+     * propagate, because it has no result type to carry a legacy verifier response in.
+     */
+    internal class LegacyFallbackException(val result: JsonElement) : Exception()
+
+    /**
+     * Step 2 - Build the VP token from the matched credentials.
+     *
+     * Takes the output of the credential-selection step and produces the serialized
+     * `vp_token` JSON string ready to include in the authorization response.
+     *
+     * For SIOPv2 (`vp_token id_token` response type), also build the ID token via
+     * [buildIdToken] before calling [sendAuthorizationResponse].
+     *
+     * @param authorizationRequest The resolved authorization request from [resolveAuthorizationRequest].
+     * @param matchedCredentials The DCQL-matched credentials to present, keyed by DCQL query ID.
+     * @param holderKey The holder's signing key.
+     * @param holderDid The holder's DID, or null for JWK-bound presentations.
+     * @param transactionDataTypeRegistry Registry for transaction_data type handlers.
+     * @return The serialized `vp_token` JSON string.
+     */
+    @Deprecated("Use the Crypto2Key overload")
+    suspend fun buildVpToken(
+        authorizationRequest: AuthorizationRequest,
+        matchedCredentials: Map<String, List<DcqlMatcher.DcqlMatchResult>>,
         holderKey: Key,
         holderDid: String?,
-        presentationRequestUrl: Url,
+        transactionDataTypeRegistry: TransactionDataTypeRegistry = TransactionDataTypeRegistry(),
+    ): String = buildVpToken(
+        authorizationRequest,
+        matchedCredentials,
+        holderKey,
+        holderDid,
+        transactionDataTypeRegistry,
+        null,
+    )
 
-        selectCredentialsForQuery: suspend (DcqlQuery) -> Map<String, List<DcqlMatcher.DcqlMatchResult>>,
-
-        holderPoliciesToRun: Flow<HolderPolicy>?,
-        runPolicies: Boolean?,
-
-        // TODO: selected credentials
-
-        /**
-         *  TEMPORARY: Fallback for application/oauth-authz-req+jwt
-         *  Use: `OldWalletPresentFunctionality.oldWalletPresentHandling(walletService, presentationRequestUrl, request)` for this
-         */
-        temporaryFallbackCallback: (suspend (Url) -> Result<JsonElement>)? = null
-    ): Result<JsonElement> {
-        log.trace { "- Start of Wallet Present Handling -" }
-
-        log.trace { "Wallet presentation will use key $holderKey, and did $holderDid" }
-
-        // Resolve AuthorizationRequest:
-        val authorizationRequest: AuthorizationRequest = if (presentationRequestUrl.parameters.contains("request_uri")) {
-            val requestUri = presentationRequestUrl.parameters["request_uri"]!!
-            log.trace { "Resolving AuthorizationRequest from URI: $requestUri" }
-            val httpResponse = http.get(requestUri)
-
-            check(httpResponse.status.isSuccess()) { "AuthorizationRequest cannot be retrieved (${httpResponse.status}): from $requestUri - ${httpResponse.bodyAsText()}" }
-
-            val authorizationRequestContentType =
-                httpResponse.contentType()
-                    ?: throw IllegalArgumentException("AuthorizationRequest does not have HTTP ContentType header set: $requestUri")
-            log.trace { "Retrieved response has content type: $authorizationRequestContentType" }
-
-            when {
-                authorizationRequestContentType.match("application/oauth-authz-req+jwt") -> {
-                    // Fallback for E2E test
-                    if (temporaryFallbackCallback != null) {
-                        return temporaryFallbackCallback(presentationRequestUrl)
-                    }
-                    TODO("Handle signed AuthorizationRequest (JWT)")
-
-                    // 1. Fetching the JWT string from
-                    // httpResponse.bodyAsText().
-
-                    // 2. Parse the JWT
-
-                    // 3. Verifying the JWT's signature The key for verification depends on the client_id prefix used by the Verifier (e.g., from DID document if client_id is a DID, from X.509 if x509_san_dns, from OpenID Federation metadata).
-
-                    // 4. decode the JWT payload string into AuthorizationRequest data class
-                }
-
-                authorizationRequestContentType.match(ContentType.Application.Json) -> {
-                    runCatching { httpResponse.body<AuthorizationRequest>() }.recover {
-                        throw IllegalArgumentException("Error parsing AuthorizationRequest retrieved from: $presentationRequestUrl")
-                    }.getOrThrow()
-                }
-
-                else -> throw IllegalArgumentException("Invalid ContentType \"$authorizationRequestContentType\" for AuthorizationRequest retrieved from: $presentationRequestUrl")
-            }
-        } else {
-            val parsedParameters = JsonObject(presentationRequestUrl.parameters.flattenEntries().associate { (k, v) ->
-                k to Json.parseToJsonElement(v)
-            })
-            Json.decodeFromJsonElement<AuthorizationRequest>(parsedParameters)
-        }
-
-        log.trace { "Wallet will try to present to AuthorizationRequest: $authorizationRequest" }
-
-        require(authorizationRequest.responseType == OpenID4VPResponseType.VP_TOKEN) {
-            TODO("Currently only ResponseMode 'vp_token' is supported")
-            // should also support "vp_token id_token"
-        }
-
-        // Build VP Token response
-        val credentials = selectCredentialsForQuery(
-            authorizationRequest.dcqlQuery ?: throw IllegalArgumentException("Missing dcql_query for AuthorizationRequest"),
+    @Deprecated("Use the Crypto2Key overload")
+    suspend fun buildVpToken(
+        authorizationRequest: AuthorizationRequest,
+        matchedCredentials: Map<String, List<DcqlMatcher.DcqlMatchResult>>,
+        holderKey: Key,
+        holderDid: String?,
+        transactionDataTypeRegistry: TransactionDataTypeRegistry,
+        holderCrypto2Key: Crypto2Key?,
+        dcApiOrigin: String? = null,
+    ): String {
+        val verifierJwkThumbprint = ResponseEncryption.resolveCrypto2(authorizationRequest)?.thumbprint()
+        return generateVpTokenForRequest(
+            authorizationRequest = authorizationRequest,
+            matchedData = matchedCredentials,
+            holderKey = holderKey,
+            holderDid = holderDid,
+            typeRegistry = transactionDataTypeRegistry,
+            verifierJwkThumbprint = verifierJwkThumbprint,
+            holderCrypto2Key = holderCrypto2Key,
+            dcApiOrigin = dcApiOrigin,
         )
-        log.trace { "Auto-selected credential count: ${credentials.mapValues { it.value.count() }}" }
-        log.trace { "Auto-selected credentials for query: $credentials" }
+    }
 
+    suspend fun buildVpToken(
+        authorizationRequest: AuthorizationRequest,
+        matchedCredentials: Map<String, List<DcqlMatcher.DcqlMatchResult>>,
+        holderKey: Crypto2Key,
+        holderDid: String?,
+        transactionDataTypeRegistry: TransactionDataTypeRegistry = TransactionDataTypeRegistry(),
+        dcApiOrigin: String? = null,
+    ): String {
+        val verifierJwkThumbprint = ResponseEncryption.resolveCrypto2(authorizationRequest)?.thumbprint()
+        return generateVpTokenForRequest(
+            authorizationRequest = authorizationRequest,
+            matchedData = matchedCredentials,
+            holderKey = null,
+            holderDid = holderDid,
+            typeRegistry = transactionDataTypeRegistry,
+            verifierJwkThumbprint = verifierJwkThumbprint,
+            holderCrypto2Key = holderKey,
+            dcApiOrigin = dcApiOrigin,
+        )
+    }
 
+    /**
+     * Build the Self-Issued ID Token for `vp_token id_token` (SIOPv2) response types.
+     * Returns null for plain `vp_token` requests.
+     *
+     * Call this after [buildVpToken] and pass the result to [sendAuthorizationResponse].
+     */
+    @Deprecated("Use the Crypto2Key overload")
+    suspend fun buildIdToken(
+        authorizationRequest: AuthorizationRequest,
+        holderKey: Key,
+        holderDid: String?,
+    ): String? = buildIdToken(authorizationRequest, holderKey, holderDid, null)
 
-        if (holderPoliciesToRun != null) {
-            // TODO: ----------------- Handle disclosures from DcqlMatchResult
+    @Deprecated("Use the Crypto2Key overload")
+    suspend fun buildIdToken(
+        authorizationRequest: AuthorizationRequest,
+        holderKey: Key,
+        holderDid: String?,
+        holderCrypto2Key: Crypto2Key?,
+        holderBindingAudience: String? = null,
+    ): String? = if (authorizationRequest.responseType == OpenID4VPResponseType.VP_TOKEN_ID_TOKEN) {
+        log.trace { "Generating Self-Issued ID Token for vp_token id_token response type" }
+        SelfIssuedIdTokenBuilder.build(
+            authorizationRequest,
+            holderKey,
+            holderDid,
+            holderCrypto2Key,
+            holderBindingAudience,
+        )
+    } else null
 
-            val relevantHolderPolicies = holderPoliciesToRun
-                .filter { it.direction == null || it.direction == HolderPolicy.HolderPolicyDirection.PRESENT }
-            val credentialsToEvaluate = credentials.values.flatMap { matchResults ->
-                matchResults.map { matchResult ->
-                    // TODO: handle it.selectedDisclosures
-                    (matchResult.credential as RawDcqlCredential).originalCredential as DigitalCredential
-                }
-            }
+    suspend fun buildIdToken(
+        authorizationRequest: AuthorizationRequest,
+        holderKey: Crypto2Key,
+        holderDid: String?,
+        holderBindingAudience: String? = null,
+    ): String? = if (authorizationRequest.responseType == OpenID4VPResponseType.VP_TOKEN_ID_TOKEN) {
+        log.trace { "Generating Self-Issued ID Token for vp_token id_token response type" }
+        SelfIssuedIdTokenBuilder.build(authorizationRequest, holderKey, holderDid, holderBindingAudience)
+    } else null
 
-            val evalResult = HolderPolicyEngine.evaluate(relevantHolderPolicies, credentialsToEvaluate.asFlow())
-            when {
-                runPolicies == null && evalResult == null -> {
-                    // ok
-                }
+    /**
+     * Executes an OS-mediated OpenID4VP presentation and returns a DigitalCredential response.
+     *
+     * Unlike [walletPresentHandling], this entry point never performs redirects or HTTP direct-post
+     * transport. The operating-system adapter owns delivery of the returned value.
+     */
+    suspend fun walletPresentDcApiHandling(
+        holderKey: Crypto2Key,
+        holderDid: String?,
+        request: ResolvedDcApiRequest,
+        selectCredentialsForQuery: suspend (DcqlQuery) -> Map<String, List<DcqlMatcher.DcqlMatchResult>>,
+        transactionDataTypeRegistry: TransactionDataTypeRegistry,
+    ): Result<DcApiCredentialResponse> = runCatching {
+        val authorizationRequest = request.authorizationRequest
+        validateRequestTransactionData(
+            transactionData = authorizationRequest.transactionData,
+            typeRegistry = transactionDataTypeRegistry,
+            credentialQueriesById = authorizationRequest.dcqlQuery?.credentials?.associateBy { it.id },
+        )
+        val credentials = selectCredentialsForQuery(
+            requireNotNull(authorizationRequest.dcqlQuery) { "Missing dcql_query for DC API Authorization Request" },
+        )
+        val vpToken = buildVpToken(
+            authorizationRequest = authorizationRequest,
+            matchedCredentials = credentials,
+            holderKey = holderKey,
+            holderDid = holderDid,
+            transactionDataTypeRegistry = transactionDataTypeRegistry,
+            dcApiOrigin = request.origin,
+        )
+        val idToken = buildIdToken(
+            authorizationRequest = authorizationRequest,
+            holderKey = holderKey,
+            holderDid = holderDid,
+            holderBindingAudience = request.holderBindingAudience,
+        )
+        DcApiWallet.buildResponse(request, vpToken, idToken)
+    }
 
-                runPolicies == true -> {
-                    if (evalResult == HolderPolicy.HolderPolicyAction.BLOCK) {
-                        throw IllegalArgumentException("Presentation execution was blocked by Holder Policy.")
-                    }
-                    if (evalResult == null) {
-                        throw IllegalArgumentException("Presentation execution was not allowed by any Holder Policy.")
-                    }
-                }
-            }
-
-            //-----
-        }
-
-
-        val vpToken = generateVpTokenForRequest(authorizationRequest, credentials, holderKey, holderDid)
-
-        // Send AuthorizationResponse:
+    /**
+     * Step 3 - Send the authorization response to the verifier.
+     *
+     * Dispatches the `vp_token` (and optional `id_token`) to the verifier according to
+     * the request's `response_mode` (fragment, query, form_post, direct_post, direct_post.jwt).
+     *
+     * @param authorizationRequest The resolved authorization request from [resolveAuthorizationRequest].
+     * @param vpToken The VP token string from [buildVpToken].
+     * @param idToken The optional ID token from [buildIdToken]. Pass null for plain vp_token flows.
+     * @return A [Result] wrapping a [WalletPresentResult] describing the transmission outcome.
+     */
+    suspend fun sendAuthorizationResponse(
+        authorizationRequest: AuthorizationRequest,
+        vpToken: String,
+        idToken: String? = null,
+    ): Result<WalletPresentResult> = runCatching {
+        // Infer response_mode from response_type if not explicitly set
         if (authorizationRequest.responseMode == null) {
             require(authorizationRequest.responseType != null) { "Missing response_type" }
             val rt = authorizationRequest.responseType!!.responseType
@@ -249,190 +615,576 @@ object WalletPresentFunctionality2 {
                 authorizationRequest.responseMode = OpenID4VPResponseMode.QUERY
             }
         }
-
-        log.trace { "- Wallet will now present (send) AuthorizationResponse (with mode ${authorizationRequest.responseMode}) -" }
+        log.trace { "Sending AuthorizationResponse (mode=${authorizationRequest.responseMode})" }
 
         when (authorizationRequest.responseMode) {
             OpenID4VPResponseMode.FRAGMENT -> {
-                // Construct URL with #vp_token=...&state=... and trigger browser redirect
-
                 require(authorizationRequest.redirectUri != null) {
                     "Invalid AuthorizationRequest: 'redirect_uri' is required for response_mode 'fragment'."
                 }
-
-                // Build the parameters that will go into the URL fragment.
                 val fragmentParameters = ParametersBuilder().apply {
                     append("vp_token", vpToken)
+                    idToken?.let { append("id_token", it) }
                     authorizationRequest.state?.let { append("state", it) }
                 }.build()
-
-                // Create the final redirect URL.
-                // e.g., https://verifier.com/callback#vp_token=...&state=...
-                val redirectUrl = "${authorizationRequest.redirectUri}#${fragmentParameters.formUrlEncode()}"
-
-                log.trace { "Responding with fragment redirect to: $redirectUrl" }
-
-                // We return the URL for the client to handle the redirect.
-                return Result.success(buildJsonObject {
-                    put("get_url", JsonPrimitive(redirectUrl))
-                })
+                WalletPresentResult(getUrl = "${authorizationRequest.redirectUri}#${fragmentParameters.formUrlEncode()}")
             }
 
             OpenID4VPResponseMode.QUERY -> {
-                // This mode requires a redirect_uri to send the user back to.
                 require(authorizationRequest.redirectUri != null) {
                     "Invalid AuthorizationRequest: 'redirect_uri' is required for response_mode 'query'."
                 }
-
-                // Build the parameters that will go into the URL query string.
                 val queryParameters = ParametersBuilder().apply {
                     append("vp_token", vpToken)
+                    idToken?.let { append("id_token", it) }
                     authorizationRequest.state?.let { append("state", it) }
                 }.build()
-
-                // Create the final redirect URL.
-                // Note the use of '?' instead of '#'.
-                // e.g., https://verifier.com/callback?vp_token=...&state=...
-                val redirectUrl = URLBuilder(authorizationRequest.redirectUri!!).apply {
-                    // Ktor's URLBuilder handles adding '?' or '&' correctly,
-                    // even if the original redirectUri already has query parameters.
-                    parameters.appendAll(queryParameters)
-                }.buildString()
-
-                log.trace { "Responding with query redirect to: $redirectUrl" }
-
-                // We return the URL for the client to handle the redirect.
-                return Result.success(buildJsonObject {
-                    put("get_url", JsonPrimitive(redirectUrl))
-                })
+                WalletPresentResult(
+                    getUrl = URLBuilder(authorizationRequest.redirectUri!!).apply {
+                        parameters.appendAll(queryParameters)
+                    }.buildString()
+                )
             }
 
             OpenID4VPResponseMode.FORM_POST -> {
-                // This mode also requires a redirect_uri to POST the form to.
-                require(authorizationRequest.redirectUri != null) {
+                requireNotNull(authorizationRequest.redirectUri) {
                     "Invalid AuthorizationRequest: 'redirect_uri' is required for response_mode 'form_post'."
                 }
-
-                // Build an HTML page with a self-submitting form.
-                val htmlContent = buildString {
-                    appendLine("<!DOCTYPE html>")
-                    appendLine("<html>")
-                    appendLine("<head><title>Submitting Presentation...</title></head>")
-                    // The body's onload attribute triggers the form submission automatically.
-                    appendLine("<body onload=\"document.forms[0].submit()\">")
-                    appendLine("<noscript><p>Your browser does not support JavaScript. Please press the button below to continue.</p></noscript>")
-                    // The form action is the Verifier's redirect_uri.
-                    appendLine("<form method=\"POST\" action=\"${authorizationRequest.redirectUri!!.encodeURLParameter()}\">")
-                    // The vp_token and state are included as hidden input fields.
-                    appendLine("<input type=\"hidden\" name=\"vp_token\" value=\"${vpToken.escapeHTML()}\"/>")
-                    authorizationRequest.state?.let {
-                        appendLine("<input type=\"hidden\" name=\"state\" value=\"${it.escapeHTML()}\"/>")
-                    }
-                    appendLine("<input type=\"submit\" value=\"Continue\"/>")
-                    appendLine("</form>")
-                    appendLine("</body>")
-                    appendLine("</html>")
+                val fields = buildList {
+                    add("vp_token" to vpToken)
+                    idToken?.let { add("id_token" to it) }
+                    authorizationRequest.state?.let { add("state" to it) }
                 }
-
-                log.trace { "Responding with self-submitting HTML form to post to: ${authorizationRequest.redirectUri}" }
-
-                // For a pure API, we return the HTML for the client to render in a WebView.
-                return Result.success(buildJsonObject {
-                    put("form_post_html", JsonPrimitive(htmlContent))
-                })
+                WalletPresentResult(
+                    formPostHtml = buildFormPostHtml(
+                        actionUrl = authorizationRequest.redirectUri!!,
+                        title = "Submitting Presentation...",
+                        fields = fields,
+                    )
+                )
             }
 
-            // authorizationRequest.responseUri
             OpenID4VPResponseMode.DIRECT_POST -> {
-                require(authorizationRequest.responseUri != null) { "Invalid AuthorizationRequest: 'response_uri' is required for response_mode 'direct_post'." }
+                val responseUri = authorizationRequest.responseUri
+                requireNotNull(responseUri) {
+                    "Invalid AuthorizationRequest: 'response_uri' is required for response_mode 'direct_post'."
+                }
                 val parameters = ParametersBuilder().apply {
                     append("vp_token", vpToken)
-
-                    if (authorizationRequest.state != null) {
-                        append("state", authorizationRequest.state!!)
-                    }
+                    idToken?.let { append("id_token", it) }
+                    authorizationRequest.state?.let { append("state", it) }
                 }.build()
-
-                log.trace { "Submitting direct_post form to Verifier: ${authorizationRequest.responseUri}" }
-                val response = http.submitForm(authorizationRequest.responseUri!!, parameters)
-
-                val responseBody = response.bodyAsText()
-
-                val responseBodyJson = runCatching { Json.decodeFromString<JsonObject>(responseBody) }
-
-                return Result.success(buildJsonObject {
-                    put("transmission_success", JsonPrimitive(response.status.isSuccess()))
-                    put(
-                        "verifier_response", Json.parseToJsonElement(responseBody)
-                    )
-                    if (responseBodyJson.getOrNull()?.containsKey("redirect_uri") == true) {
-                        put("redirect_to", responseBodyJson.getOrThrow()["redirect_uri"] ?: JsonNull)
-                    }
-                })
+                postFormResponse(responseUri, parameters)
             }
 
             OpenID4VPResponseMode.DIRECT_POST_JWT -> {
-                // Encrypt the vp_token and state into a JWE, then POST response=<JWE_string>.
-                TODO()
+                val responseUri = authorizationRequest.responseUri
+                requireNotNull(responseUri) {
+                    "Invalid AuthorizationRequest: 'response_uri' is required for response_mode 'direct_post.jwt'."
+                }
+                val encryption = requireNotNull(ResponseEncryption.resolveCrypto2(authorizationRequest))
+                val vpTokenElement = Json.parseToJsonElement(vpToken)
+                val payloadJson = buildJsonObject {
+                    put("vp_token", vpTokenElement)
+                    idToken?.let { put("id_token", it) }
+                    authorizationRequest.state?.let { put("state", JsonPrimitive(it)) }
+                }
+                val jweString = encryptDirectPostResponse(
+                    payload = payloadJson,
+                    recipientPublicKey = encryption.recipientPublicKey,
+                    contentEncryption = encryption.contentEncryption,
+                )
+                val parameters = ParametersBuilder().apply { append("response", jweString) }.build()
+                postFormResponse(responseUri, parameters)
             }
 
-            // DC API
             OpenID4VPResponseMode.DC_API -> TODO("DC API is not yet supported")
             OpenID4VPResponseMode.DC_API_JWT -> TODO("DC API is not yet supported")
             null -> throw IllegalArgumentException("Missing response mode from AuthorizationRequest")
         }
     }
 
+    private suspend fun resolveAuthorizationRequestObject(
+        presentationRequestUrl: Url,
+        unsignedRequestObjectPolicy: AuthorizationRequestResolver.UnsignedRequestObjectPolicy,
+        clientIdTrustConfiguration: ClientIdTrustConfiguration,
+    ): ResolvedAuthorizationRequest =
+        AuthorizationRequestResolver.resolve(
+            requestUrl = presentationRequestUrl,
+            unsignedRequestObjectPolicy = unsignedRequestObjectPolicy,
+            trustConfiguration = clientIdTrustConfiguration,
+            fetchRequestUri = { requestUri, requestUriMethod ->
+                AuthorizationRequestResolver.fetchRequestUriWithWebDataFetcher(
+                    webResolveAuthReq = webResolveAuthReq,
+                    requestUri = requestUri,
+                    requestUriMethod = requestUriMethod,
+                    // Optional wallet metadata is omitted until the caller explicitly profiles
+                    // its values. Some Final-compliant verifier endpoints reject unsupported
+                    // capability members, while wallet_nonce remains mandatory for this flow.
+                    sendWalletMetadata = false,
+                )
+            },
+        )
+
+    /**
+     * Resolves the request with the strict OpenID4VP 1.0 resolver and validates it.
+     *
+     * The strict resolver - including client identifier authentication - is always the primary path.
+     * A configured legacy fallback is consulted only after resolution or validation has failed, by
+     * throwing [LegacyFallbackException]; see [legacyFallbackResult].
+     */
+    private suspend fun resolveAndValidateAuthorizationRequest(
+        presentationRequestUrl: Url,
+        unsignedRequestObjectPolicy: AuthorizationRequestResolver.UnsignedRequestObjectPolicy,
+        clientIdTrustConfiguration: ClientIdTrustConfiguration,
+        legacyFallbackCallback: (suspend (Url) -> Result<JsonElement>)?,
+    ): ResolvedAuthorizationRequest = try {
+        resolveAuthorizationRequestObject(
+            presentationRequestUrl,
+            unsignedRequestObjectPolicy,
+            clientIdTrustConfiguration,
+        ).also { validateAuthorizationRequest(it.authorizationRequest) }
+    } catch (cause: CancellationException) {
+        throw cause
+    } catch (cause: Exception) {
+        legacyFallbackResult(presentationRequestUrl, legacyFallbackCallback)
+            ?.let { throw LegacyFallbackException(it.verifierResponse ?: JsonNull) }
+        throw cause
+    }
+
+    /**
+     * Legacy DIF Presentation Exchange fallback.
+     *
+     * Reached only after [AuthorizationRequestResolver.resolve] and [validateAuthorizationRequest]
+     * have already failed, so a well-formed OpenID4VP 1.0 request is never diverted here, and client
+     * identifier trust validation always runs first. [isLegacyPresentationDefinitionRequest]
+     * additionally rejects anything carrying a request object, so an attacker cannot downgrade a
+     * signed request by appending a legacy parameter to its URL.
+     */
+    private suspend fun legacyFallbackResult(
+        presentationRequestUrl: Url,
+        legacyFallbackCallback: (suspend (Url) -> Result<JsonElement>)?,
+    ): WalletPresentResult? {
+        if (legacyFallbackCallback == null || !presentationRequestUrl.isLegacyPresentationDefinitionRequest()) {
+            return null
+        }
+
+        val fallbackResponse = try {
+            legacyFallbackCallback(presentationRequestUrl).getOrNull()
+        } catch (cause: CancellationException) {
+            throw cause
+        } catch (_: Exception) {
+            null
+        } ?: return null
+
+        return WalletPresentResult(
+            transmissionSuccess = true,
+            verifierResponse = fallbackResponse,
+        )
+    }
+
+    /**
+     * Whether the request explicitly and unambiguously identifies itself as pre-1.0 DIF Presentation
+     * Exchange. A request object is disqualifying: those are resolved and authenticated by
+     * [AuthorizationRequestResolver] and must never be retried on the legacy path.
+     */
+    private fun Url.isLegacyPresentationDefinitionRequest(): Boolean =
+        !parameters.contains("request") &&
+                !parameters.contains("request_uri") &&
+                (
+                        protocol.name == "mdoc-openid4vp" ||
+                                parameters.contains("presentation_definition") ||
+                                parameters.contains("presentation_definition_uri")
+                        )
+
+    @Deprecated("Use the Crypto2Key overload")
+    suspend fun walletPresentHandling(
+        holderKey: Key,
+        holderDid: String?,
+        presentationRequestUrl: Url,
+        selectCredentialsForQuery: suspend (DcqlQuery) -> Map<String, List<DcqlMatcher.DcqlMatchResult>>,
+        holderPoliciesToRun: Flow<HolderPolicy>?,
+        runPolicies: Boolean?,
+        transactionDataTypeRegistry: TransactionDataTypeRegistry,
+        legacyFallbackCallback: (suspend (Url) -> Result<JsonElement>)? = null,
+        unsignedRequestObjectPolicy: AuthorizationRequestResolver.UnsignedRequestObjectPolicy =
+            AuthorizationRequestResolver.UnsignedRequestObjectPolicy.REQUIRE_SIGNED,
+        resolvedAuthorizationRequest: ResolvedAuthorizationRequest? = null,
+        beforeCredentialsUsed: suspend (Int) -> Unit = {},
+    ): Result<WalletPresentResult> = walletPresentHandling(
+        holderKey = holderKey,
+        holderDid = holderDid,
+        presentationRequestUrl = presentationRequestUrl,
+        selectCredentialsForQuery = selectCredentialsForQuery,
+        holderPoliciesToRun = holderPoliciesToRun,
+        runPolicies = runPolicies,
+        transactionDataTypeRegistry = transactionDataTypeRegistry,
+        legacyFallbackCallback = legacyFallbackCallback,
+        unsignedRequestObjectPolicy = unsignedRequestObjectPolicy,
+        resolvedAuthorizationRequest = resolvedAuthorizationRequest,
+        holderCrypto2Key = null,
+        clientIdTrustConfiguration = ClientIdTrustConfiguration(),
+        beforeCredentialsUsed = beforeCredentialsUsed,
+    )
+
+    @Deprecated("Use the Crypto2Key overload")
+    suspend fun walletPresentHandling(
+        holderKey: Key,
+        holderDid: String?,
+        presentationRequestUrl: Url,
+        selectCredentialsForQuery: suspend (DcqlQuery) -> Map<String, List<DcqlMatcher.DcqlMatchResult>>,
+        holderPoliciesToRun: Flow<HolderPolicy>?,
+        runPolicies: Boolean?,
+        transactionDataTypeRegistry: TransactionDataTypeRegistry,
+        legacyFallbackCallback: (suspend (Url) -> Result<JsonElement>)? = null,
+        unsignedRequestObjectPolicy: AuthorizationRequestResolver.UnsignedRequestObjectPolicy =
+            AuthorizationRequestResolver.UnsignedRequestObjectPolicy.REQUIRE_SIGNED,
+        resolvedAuthorizationRequest: ResolvedAuthorizationRequest? = null,
+        holderCrypto2Key: Crypto2Key?,
+        clientIdTrustConfiguration: ClientIdTrustConfiguration = ClientIdTrustConfiguration(),
+        beforeCredentialsUsed: suspend (Int) -> Unit = {},
+    ): Result<WalletPresentResult> = walletPresentHandlingWithKey(
+        holderKey,
+        holderDid,
+        presentationRequestUrl,
+        selectCredentialsForQuery,
+        holderPoliciesToRun,
+        runPolicies,
+        transactionDataTypeRegistry,
+        legacyFallbackCallback,
+        unsignedRequestObjectPolicy,
+        resolvedAuthorizationRequest,
+        holderCrypto2Key,
+        clientIdTrustConfiguration,
+        beforeCredentialsUsed,
+    )
+
+    suspend fun walletPresentHandling(
+        holderKey: Crypto2Key,
+        holderDid: String?,
+        presentationRequestUrl: Url,
+        selectCredentialsForQuery: suspend (DcqlQuery) -> Map<String, List<DcqlMatcher.DcqlMatchResult>>,
+        holderPoliciesToRun: Flow<HolderPolicy>?,
+        runPolicies: Boolean?,
+        transactionDataTypeRegistry: TransactionDataTypeRegistry,
+        legacyFallbackCallback: (suspend (Url) -> Result<JsonElement>)? = null,
+        unsignedRequestObjectPolicy: AuthorizationRequestResolver.UnsignedRequestObjectPolicy =
+            AuthorizationRequestResolver.UnsignedRequestObjectPolicy.REQUIRE_SIGNED,
+        resolvedAuthorizationRequest: ResolvedAuthorizationRequest? = null,
+        clientIdTrustConfiguration: ClientIdTrustConfiguration = ClientIdTrustConfiguration(),
+        beforeCredentialsUsed: suspend (Int) -> Unit = {},
+    ): Result<WalletPresentResult> = walletPresentHandlingWithKey(
+        null,
+        holderDid,
+        presentationRequestUrl,
+        selectCredentialsForQuery,
+        holderPoliciesToRun,
+        runPolicies,
+        transactionDataTypeRegistry,
+        legacyFallbackCallback,
+        unsignedRequestObjectPolicy,
+        resolvedAuthorizationRequest,
+        holderKey,
+        clientIdTrustConfiguration,
+        beforeCredentialsUsed,
+    )
+
+    private suspend fun walletPresentHandlingWithKey(
+        holderKey: Key?,
+        holderDid: String?,
+        presentationRequestUrl: Url,
+        selectCredentialsForQuery: suspend (DcqlQuery) -> Map<String, List<DcqlMatcher.DcqlMatchResult>>,
+        holderPoliciesToRun: Flow<HolderPolicy>?,
+        runPolicies: Boolean?,
+        transactionDataTypeRegistry: TransactionDataTypeRegistry,
+
+        // TODO: selected credentials
+
+        /**
+         * Fallback for ancient legacy tests, wrong integration tests, and various other stuff that should have long been removed
+         * Use: `OldWalletPresentFunctionality.oldWalletPresentHandling(walletService, presentationRequestUrl, request)` for this
+         */
+        legacyFallbackCallback: (suspend (Url) -> Result<JsonElement>)?,
+        unsignedRequestObjectPolicy: AuthorizationRequestResolver.UnsignedRequestObjectPolicy,
+        resolvedAuthorizationRequest: ResolvedAuthorizationRequest?,
+        holderCrypto2Key: Crypto2Key?,
+        clientIdTrustConfiguration: ClientIdTrustConfiguration,
+        /** Invoked with the credential count before the credentials are used, for usage metering. */
+        beforeCredentialsUsed: suspend (Int) -> Unit,
+    ): Result<WalletPresentResult> {
+        log.trace { "- Start of Wallet Present Handling -" }
+        log.trace { "Wallet presentation will use key $holderKey, and did $holderDid" }
+
+        // Step 1: Resolve AuthorizationRequest. The strict resolver is always the primary path; the
+        // legacy fallback is only reached from inside it, after resolution has failed.
+        val resolvedRequest = resolvedAuthorizationRequest ?: try {
+            resolveAndValidateAuthorizationRequest(
+                presentationRequestUrl,
+                unsignedRequestObjectPolicy,
+                clientIdTrustConfiguration,
+                legacyFallbackCallback,
+            )
+        } catch (fallback: LegacyFallbackException) {
+            return Result.success(
+                WalletPresentResult(transmissionSuccess = true, verifierResponse = fallback.result)
+            )
+        }
+        val authorizationRequest = resolvedRequest.authorizationRequest.also(::validateAuthorizationRequest)
+
+        log.trace { "Wallet will try to present to AuthorizationRequest: $authorizationRequest" }
+
+        val validation = PresentationRequestValidator.validate(
+            resolvedRequest = resolvedRequest,
+            transactionDataTypeRegistry = transactionDataTypeRegistry,
+            formatCapabilities = {
+                WalletPresentationFormatRegistry.capabilitiesFromKeys(
+                    keys = listOfNotNull(holderCrypto2Key),
+                    fallbackKeyTypes = setOfNotNull(holderKey?.keyType.takeIf { holderCrypto2Key == null }),
+                )
+            },
+        )
+        if (validation is PresentationRequestValidationResult.Invalid) {
+            // OpenID4VP 1.0 8.x: a Wallet SHOULD NOT return protocol errors before obtaining End-User
+            // consent, and may cancel the flow instead. transaction_data is rejected purely from the
+            // request, long before the user sees anything, so reporting invalid_transaction_data to the
+            // Verifier would leak that a request was received without any interaction having happened.
+            // Cancelling matches how the other pre-consent request checks behave (they throw), and 5.1
+            // is still satisfied because no Credential is presented.
+            if (validation.error.code == OID4VPErrorCode.INVALID_TRANSACTION_DATA) {
+                throw IllegalArgumentException(validation.error.message)
+            }
+            return walletRejectHandling(authorizationRequest, validation.error.code)
+        }
+        val validatedTransactionData = (validation as PresentationRequestValidationResult.Valid).transactionData
+
+        // Step 2: Select credentials via the caller-supplied lambda.
+        val query = requireNotNull(authorizationRequest.dcqlQuery)
+        val credentials = selectCredentialsForQuery(query)
+        log.trace { "Auto-selected credential count: ${credentials.mapValues { it.value.count() }}" }
+        val availabilityError = PresentationRequestValidator.validateTransactionDataCredentialAvailability(
+            transactionData = validatedTransactionData,
+            availableCredentialQueryIds = credentials.filterValues { it.isNotEmpty() }.keys,
+        ) ?: PresentationRequestValidator.validateCredentialAvailability(
+            query = query,
+            availableCredentialQueryIds = credentials.filterValues { it.isNotEmpty() }.keys,
+        )
+        availabilityError?.let { error ->
+            PresentationRequestValidator.requireErrorResponseCanBeSent(resolvedRequest)
+            return walletRejectHandling(authorizationRequest, error.code)
+        }
+
+        // Apply holder policies.
+        if (holderPoliciesToRun != null) {
+            // transaction_data checks are intentionally not implemented as HolderPolicy checks:
+            // HolderPolicyEngine receives credentials only and has no authorization-request context.
+            // TODO: handle disclosures from DcqlMatchResult
+            val relevantHolderPolicies = holderPoliciesToRun
+                .filter { it.direction == null || it.direction == HolderPolicy.HolderPolicyDirection.PRESENT }
+            val credentialsToEvaluate = credentials.values.flatMap { matchResults ->
+                matchResults.map { matchResult ->
+                    // TODO: handle matchResult.selectedDisclosures
+                    (matchResult.credential as RawDcqlCredential).originalCredential as DigitalCredential
+                }
+            }
+            val evalResult = HolderPolicyEngine.evaluate(relevantHolderPolicies, credentialsToEvaluate.asFlow())
+            when {
+                runPolicies == null && evalResult == null -> { /* ok */
+                }
+
+                runPolicies == true -> {
+                    if (evalResult == HolderPolicy.HolderPolicyAction.BLOCK)
+                        throw IllegalArgumentException("Presentation execution was blocked by Holder Policy.")
+                    if (evalResult == null)
+                        throw IllegalArgumentException("Presentation execution was not allowed by any Holder Policy.")
+                }
+            }
+        }
+
+        val credentialCount = distinctCredentialCount(credentials)
+        if (credentialCount > 0) beforeCredentialsUsed(credentialCount)
+
+        // Step 3: Build VP token (and optional ID token for SIOPv2).
+        val vpToken = holderCrypto2Key?.let {
+            buildVpToken(authorizationRequest, credentials, it, holderDid, transactionDataTypeRegistry)
+        } ?: buildVpToken(
+            authorizationRequest,
+            credentials,
+            requireNotNull(holderKey),
+            holderDid,
+            transactionDataTypeRegistry,
+        )
+        val idToken = if (holderCrypto2Key != null) {
+            buildIdToken(authorizationRequest, holderCrypto2Key, holderDid)
+        } else {
+            buildIdToken(authorizationRequest, requireNotNull(holderKey), holderDid)
+        }
+
+        // Step 4: Send response.
+        return sendAuthorizationResponse(authorizationRequest, vpToken, idToken)
+    }
+
+    internal fun distinctCredentialCount(
+        credentials: Map<String, List<DcqlMatcher.DcqlMatchResult>>,
+    ): Int = credentials.values.flatten().distinctBy { it.credential.id }.size
+
     /**
      * Creates a Key Binding JWT for SD-JWT presentations.
+     *
+     * Per OID4VP 1.0 §5.5.1, when the authorization request includes `transaction_data`,
+     * the wallet MUST include `transaction_data_hashes` in the KB-JWT. Each entry is the
+     * base64url-encoded SHA-256 hash of the corresponding base64url-encoded transaction data
+     * item as it appeared in the request. The algorithm is SHA-256 by default.
      */
+    @Deprecated("Use the Crypto2Key overload")
     internal suspend fun createKeyBindingJwt(
         disclosed: String,
         nonce: String,
         audience: String?,
         selectedDisclosures: List<SdJwtSelectiveDisclosure>,
-        holderKey: Key
+        holderKey: Key,
+        transactionData: List<String>? = null,
+        acceptedAlgorithms: Set<String>? = null,
+        holderCrypto2Key: Crypto2Key? = null,
+    ): String = createKeyBindingJwtWithKey(
+        disclosed,
+        nonce,
+        audience,
+        selectedDisclosures,
+        holderKey,
+        transactionData,
+        acceptedAlgorithms,
+        holderCrypto2Key,
+    )
+
+    internal suspend fun createKeyBindingJwt(
+        disclosed: String,
+        nonce: String,
+        audience: String?,
+        selectedDisclosures: List<SdJwtSelectiveDisclosure>,
+        holderKey: Crypto2Key,
+        transactionData: List<String>? = null,
+        acceptedAlgorithms: Set<String>? = null,
+    ): String = createKeyBindingJwtWithKey(
+        disclosed,
+        nonce,
+        audience,
+        selectedDisclosures,
+        null,
+        transactionData,
+        acceptedAlgorithms,
+        holderKey,
+    )
+
+    private suspend fun createKeyBindingJwtWithKey(
+        disclosed: String,
+        nonce: String,
+        audience: String?,
+        selectedDisclosures: List<SdJwtSelectiveDisclosure>,
+        holderKey: Key?,
+        transactionData: List<String>?,
+        acceptedAlgorithms: Set<String>?,
+        holderCrypto2Key: Crypto2Key?,
     ): String {
         selectedDisclosures.map { it.asEncoded() }
         log.trace { "Creating KB+JWT for disclosures: $selectedDisclosures" }
-        // The spec for _sd_hash in KB-JWT sometimes implies hashing the concatenated disclosures
-        // as they would appear in the final presentation string (with ~).
-        // Let's assume for now Verifier will re-calculate based on the presented disclosures.
-        // A common interpretation for `sd_hash` in KB-JWT is a hash of the digests from the `_sd` array
-        // that correspond to the selectedDisclosures. This requires linking disclosures back to their original digests.
-
-        // Simpler approach (hashing concatenated presented disclosures):
-        // This binds the KB-JWT to the exact set and order of presented disclosures.
+        // Per RFC 9901 §4.3.1, sd_hash is computed over:
+        // <Issuer-signed JWT>~<Disclosure 1>~...~<Disclosure N>~
+        // The trailing ~ is always required, even when there are no disclosures.
+        // disclose() returns "issuer_jwt~disc1~disc2" (no trailing ~) for non-empty disclosures,
+        // and "issuer_jwt~" (trailing ~) for zero disclosures — so we only append ~ when needed.
         val stringToHash = if (selectedDisclosures.isNotEmpty()) {
-            "$disclosed~" //selectedDisclosures.joinToString(separator = "~") { it.asEncoded() }
+            "$disclosed~"
         } else {
-            disclosed // If there are no disclosures, what should sd_hash be?
-            // Typically, a KB-JWT implies there are disclosures.
-            // If it's possible to have a KB-JWT without disclosures (e.g. just binding to the core SD-JWT),
-            // then the sd_hash might be calculated differently or be absent.
-            // For now, let's assume selectedDisclosures is non-empty if we are creating a KB-JWT.
-            // If selectedDisclosures can be empty, define how sd_hash is computed then?
-            // Often, an empty string is hashed, or the field is omitted if allowed by profile.
+            disclosed // disclose() already produces "issuer_jwt~" for zero disclosures
         }
 
         log.trace { "Wallet presentation: Calculating hash for SD-JWT kb from: $stringToHash" }
+        val sdAlgorithm = SDJwt.parse(disclosed).undisclosedPayload["_sd_alg"]?.jsonPrimitive?.contentOrNull
+            ?: "sha-256"
+        require(sdAlgorithm.equals("sha-256", ignoreCase = true)) {
+            "Unsupported SD-JWT disclosure hash algorithm: $sdAlgorithm"
+        }
         val sdHash = calculateSha256Base64Url(stringToHash)
+        val decodedTransactionData = decodeList(transactionData.orEmpty())
+        val transactionDataHashAlgorithm = resolveHashAlgorithm(decodedTransactionData)
+        val transactionDataHashes = transactionDataHashAlgorithm?.let {
+            calculateTransactionDataHashes(
+                transactionData = transactionData.orEmpty(),
+                algorithm = it,
+            )
+        }
 
+        val crypto2Key = holderCrypto2Key ?: holderKey?.let { WalletCrypto2KeyAdapter.signingKey(it) }
+        val crypto2Algorithm = crypto2Key?.selectJwsAlgorithm(acceptedAlgorithms)
+        val signingAlgorithm = crypto2Algorithm?.identifier ?: requireNotNull(holderKey).keyType.jwsAlg.also { legacyAlgorithm ->
+            acceptedAlgorithms?.let {
+                require(legacyAlgorithm in it) { "Verifier does not support KB-JWT algorithm $legacyAlgorithm" }
+            }
+        }
         val jwsHeaders = buildJsonObject {
-            //put("alg", JsonPrimitive(holderKey.algorithm)) // e.g., "ES256"
+            // alg is REQUIRED in the KB-JWT JOSE header per RFC 9901 §4.3
+            put("alg", JsonPrimitive(signingAlgorithm))
             put("typ", JsonPrimitive("kb+jwt"))
-            // Add "kid" if holderKey has a key ID and it's useful for the verifier
-            // holderKey.kid?.let { put("kid", JsonPrimitive(it)) }
-        } // The header also needs to be base64url encoded as part of JWS construction
+        }
 
         val kbJwtPayload = buildJsonObject {
             put("aud", JsonPrimitive(audience))
             put("nonce", JsonPrimitive(nonce))
             put("iat", JsonPrimitive(Clock.System.now().epochSeconds))
-            // Add exp if needed
             put("sd_hash", JsonPrimitive(sdHash)) // binding to the selected disclosures
+            transactionDataHashes?.takeIf { it.isNotEmpty() }?.let { hashes ->
+                put(
+                    "transaction_data_hashes",
+                    buildJsonArray { hashes.forEach { add(JsonPrimitive(it)) } },
+                )
+                if (decodedTransactionData.any { !it.transactionData.transactionDataHashesAlg.isNullOrEmpty() }) {
+                    put(
+                        "transaction_data_hashes_alg",
+                        JsonPrimitive(transactionDataHashAlgorithm),
+                    )
+                }
+            }
         }
-        return holderKey.signJws(plaintext = kbJwtPayload.toString().encodeToByteArray(), headers = jwsHeaders)
+        return if (crypto2Key != null) {
+            CompactJws.sign(
+                payload = Json.encodeToString(kbJwtPayload).encodeToByteArray(),
+                key = crypto2Key,
+                algorithm = requireNotNull(crypto2Algorithm),
+                protectedHeader = jwsHeaders,
+            )
+        } else requireNotNull(holderKey).signJws(
+            plaintext = kbJwtPayload.toString().encodeToByteArray(),
+            headers = jwsHeaders,
+        )
     }
+
+    internal suspend fun encryptDirectPostResponse(
+        payload: JsonObject,
+        recipientPublicKey: EncodedKey.Jwk,
+        contentEncryption: JweContentEncryption,
+    ): String {
+        val verifierJwk = Jwk.parse(recipientPublicKey)
+        require(!recipientPublicKey.privateMaterial && !Jwk.containsPrivateMaterial(verifierJwk)) {
+            "Verifier response-encryption JWK must not contain private material"
+        }
+        require(isSupportedVerifierEncryptionJwk(verifierJwk)) {
+            "Verifier response-encryption JWK must use ECDH-ES with a supported EC curve and kid"
+        }
+        val verifierKeyId = requireNotNull(Jwk.metadata(recipientPublicKey).keyId) {
+            "Verifier response-encryption JWK must contain kid"
+        }
+        return CompactJwe.encrypt(
+            plaintext = Json.encodeToString(payload).encodeToByteArray(),
+            recipientPublicKey = recipientPublicKey,
+            contentEncryption = contentEncryption,
+            protectedHeader = buildJsonObject { put("kid", verifierKeyId) },
+        )
+    }
+
+    internal fun selectDirectPostContentEncryption(advertised: List<String>?): JweContentEncryption =
+        ResponseEncryption.selectContentEncryption(advertised)
+
+    internal fun isSupportedVerifierEncryptionJwk(jwk: JsonObject): Boolean =
+        ResponseEncryption.isSupportedVerifierEncryptionJwk(jwk)
 
 }

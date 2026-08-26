@@ -6,7 +6,7 @@ plugins {
 group = "id.walt.protocols"
 
 dependencies {
-    // Walt.id
+    // walt.id
     api(project(":waltid-services:waltid-service-commons"))
     implementation(project(":waltid-libraries:protocols:waltid-openid4vp-verifier"))
     implementation(project(":waltid-libraries:credentials:waltid-dcql"))
@@ -14,7 +14,7 @@ dependencies {
     implementation(project(":waltid-libraries:credentials:waltid-verification-policies2-vp"))
 
     // JSON
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
+    implementation(identityLibs.kotlinx.serialization.json)
 }
 
 mavenPublishing {

@@ -1,4 +1,4 @@
-@file:OptIn(ExperimentalUuidApi::class, ExperimentalSerializationApi::class)
+@file:OptIn(ExperimentalSerializationApi::class)
 
 package id.walt.cose
 
@@ -12,7 +12,6 @@ import kotlinx.serialization.decodeFromHexString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlin.test.Test
-import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
 class CoseSign1TestVectors {
@@ -100,19 +99,23 @@ class CoseSign1TestVectors {
                     val coseSelf = CoseSign1.fromTagged(signedHex)
                     val coseOther = CoseSign1.fromTagged(expectedHex)
 
-                    println("""
+                    println(
+                        """
                         Self: $coseSelf
                         Other: $coseOther
-                    """.trimIndent())
+                    """.trimIndent()
+                    )
 
                     val verifier = jwkKey.toCoseVerifier(alg)
                     val verifySelf = coseSelf.verify(verifier, externalAad)
                     val verifyOther = coseOther.verify(verifier, externalAad)
 
-                    println("""
+                    println(
+                        """
                         |Verify self:  $verifySelf
                         |Verify other: $verifyOther
-                    """.trimMargin())
+                    """.trimMargin()
+                    )
 
                     return when {
                         !verifyOther -> Result.failure(IllegalStateException("Could not verify other: $coseOther"))

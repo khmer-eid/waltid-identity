@@ -1,10 +1,12 @@
 package id.walt.cose
 
-import kotlinx.serialization.*
+import kotlinx.serialization.ExperimentalSerializationApi
+import kotlinx.serialization.KSerializer
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ByteArraySerializer
 import kotlinx.serialization.builtins.ListSerializer
-import kotlinx.serialization.cbor.ByteString
-import kotlinx.serialization.cbor.CborLabel
+import kotlinx.serialization.cbor.*
 import kotlinx.serialization.descriptors.PrimitiveKind
 import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
 import kotlinx.serialization.descriptors.SerialDescriptor
@@ -30,8 +32,9 @@ data class CoseHeaders(
     //@CborLabel(2) @SerialName("crit") val criticalHeaders: String? = null,
     /** 3: Content type of the payload */
     @CborLabel(3) @SerialName("content type") val contentType: CoseContentType? = null,
-    /** 4: Key identifier */
-    @CborLabel(4) @SerialName("kid") @ByteString val kid: ByteArray? = null,
+    /** 4: Key identifier — per RFC 8152 §3.1, kid is application-defined; in practice it may
+     *  be a byte string (canonical) or a text string (e.g. a UUID). Both are supported here. */
+    @CborLabel(4) @SerialName("kid") @Serializable(CoseKidSerializer::class) val kid: ByteArray? = null,
     /** 5: Full Initialization Vector */
     @CborLabel(5) @SerialName("IV") @ByteString val iv: ByteArray? = null,
     /** 6: Partial Initialization Vector */
@@ -49,10 +52,11 @@ data class CoseHeaders(
      * */
     @Serializable(CoseCertificateSerializer::class)
     @CborLabel(33) @SerialName("x5chain") val x5chain: List<CoseCertificate>? = null,
-    /** 45: Hash of an X.509 certificate (RFC 9360) */
-    //@CborLabel(34) @ByteString val x5t: ByteArray? = null,
+    /** 34: Hash of an X.509 certificate (RFC 9360): COSE_CertHash = [ hashAlg, hashValue ] */
+    @Serializable(CoseCertHashSerializer::class)
+    @CborLabel(34) @SerialName("x5t") val x5t: CoseCertHash? = null,
     /** 35: URI pointing to an X.509 certificate (RFC 9360) */
-    //@CborLabel(35) val x5u: String? = null,
+    @CborLabel(35) @SerialName("x5u") val x5u: String? = null,
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -67,6 +71,8 @@ data class CoseHeaders(
         if (!kidContext.contentEquals(other.kidContext)) return false
         if (type != other.type) return false
         if (x5chain != other.x5chain) return false
+        if (x5t != other.x5t) return false
+        if (x5u != other.x5u) return false
 
         return true
     }
@@ -81,6 +87,8 @@ data class CoseHeaders(
         result = 31 * result + (kidContext?.contentHashCode() ?: 0)
         result = 31 * result + (type?.hashCode() ?: 0)
         result = 31 * result + (x5chain?.hashCode() ?: 0)
+        result = 31 * result + (x5t?.hashCode() ?: 0)
+        result = 31 * result + (x5u?.hashCode() ?: 0)
         return result
     }
 }
@@ -96,11 +104,7 @@ sealed class CoseContentType {
     data class AsString(val value: String) : CoseContentType()
 }
 
-/**
- * **This custom serializer is required, due to:**
- *
- * Custom serializer for the CoseContentType sealed class to handle the tstr/uint union type.
- */
+@OptIn(ExperimentalSerializationApi::class)
 object CoseContentTypeSerializer : KSerializer<CoseContentType> {
     override val descriptor: SerialDescriptor =
         PrimitiveSerialDescriptor("CoseContentType", PrimitiveKind.STRING)
@@ -112,29 +116,16 @@ object CoseContentTypeSerializer : KSerializer<CoseContentType> {
         }
     }
 
-    /**
-     * This custom deserialization is required, as the content type could be either a RFC6838 Section 4.2 string
-     * in the form of "<type-name>/<subtype-name>", or it can be a Integer from the "CoAP Content-Formats" IANA registry table.
-     * And there is no possible differentiator in the headers, so during deserialization we don't actually know if
-     * we handle a string content-type, or an int content-type. Thus, we can only try with `decodeString()` and `decodeInt()`.
-     *
-     * NOTE: It is required to give priority to `decodeString()`, and use `decodeInt()` as an fallback. The reason
-     * is that calling `decodeInt()` on a string content type (like "text/plain") will work, e.g. it reads 10. But then,
-     * the rest of the data stream will be corrupted. The reverse is not possible however, as strings are prefixed with 0B,
-     * so calling `decodeString()` on an int content type will throw an error. This is the only way I found to decode them
-     * to the correct data type.
-     */
     override fun deserialize(decoder: Decoder): CoseContentType {
-        // Probe the type by attempting to decode as a String first, falling back to Int.
-        return try {
-            CoseContentType.AsString(decoder.decodeString())
-        } catch (e: SerializationException) {
-            require(e.message?.startsWith("Expected start of string, but found") == true) { "Error deserializing CoseContentType: ${e.stackTraceToString()}" }
-            CoseContentType.AsInt(decoder.decodeInt())
+        val element = decoder.decodeSerializableValue(CborElement.serializer())
+
+        return when (element) {
+            is CborString -> CoseContentType.AsString(element.value)
+            is CborInteger -> CoseContentType.AsInt(element.long.toInt())
+            else -> throw IllegalArgumentException("Expected string or int for content type, got ${element::class.simpleName}")
         }
     }
 }
-
 
 @OptIn(ExperimentalSerializationApi::class)
 data class CoseCertificate(
@@ -155,43 +146,108 @@ data class CoseCertificate(
     }
 }
 
-/**
- * **This custom serializer is required, due to:**
- *
- * Per RFC 9360 the `x5chain` header (label 33) must always be an array of certificates,
- * and if there's one certificate it is an array of 1 element.
- *
- * However, some real life examples are not standard-compliant, and encode a
- * single certificate chain as a raw bytestring (instead of: array of bytestrings).
- * This
- */
+@OptIn(ExperimentalSerializationApi::class)
 object CoseCertificateSerializer : KSerializer<List<CoseCertificate>> {
-    private val listSerializer = ListSerializer(ByteArraySerializer())
-    private val singleSerializer = ByteArraySerializer()
     override val descriptor: SerialDescriptor =
         ListSerializer(ByteArraySerializer()).descriptor
 
     override fun serialize(encoder: Encoder, value: List<CoseCertificate>) {
-        // Handle non-compliant single certificate chain for round-trip test compatibility
         if (value.size == 1) {
-            encoder.encodeSerializableValue(singleSerializer, value.first().rawBytes)
+            encoder.encodeSerializableValue(CborElement.serializer(), CborByteString(value.first().rawBytes))
         } else {
-            encoder.encodeSerializableValue(listSerializer, value.map { it.rawBytes })
+            val cborArray = CborArray(value.map { CborByteString(it.rawBytes) })
+            encoder.encodeSerializableValue(CborElement.serializer(), cborArray)
         }
     }
 
-    @OptIn(ExperimentalSerializationApi::class)
-    /**
-     * Try to decode certificate chain as array
-     * of bytearray (correct, standard compliant version).
-     * Alternatively, fallback to decoding a single bytearray (incorrect, non-standard-compliant).
-     */
-    override fun deserialize(decoder: Decoder): List<CoseCertificate> = try {
-        decoder.decodeNullableSerializableValue(ListSerializer(ByteArraySerializer()))
-    } catch (e: SerializationException) {
-        require(e.message?.startsWith("Expected start of array, but found") == true) { "Error deserializing CoseContentType: ${e.stackTraceToString()}" }
-        decoder.decodeNullableSerializableValue(ByteArraySerializer())?.let { listOf(it) }
-    }?.map { CoseCertificate(it) }
-        ?: emptyList()
+    override fun deserialize(decoder: Decoder): List<CoseCertificate> {
+        val element = decoder.decodeSerializableValue(CborElement.serializer())
 
+        return when (element) {
+            is CborArray -> element.map {
+                require(it is CborByteString) { "x5chain array elements must be byte strings" }
+                CoseCertificate(it.toByteArray())
+            }
+
+            is CborByteString -> listOf(CoseCertificate(element.toByteArray()))
+            else -> throw IllegalArgumentException("Expected array or bytestring for x5chain, got ${element::class.simpleName}")
+        }
+    }
+}
+
+/**
+ * COSE_CertHash for the `x5t` header parameter (RFC 9360 §2):
+ * `COSE_CertHash = [ hashAlg: int / tstr, hashValue: bstr ]`.
+ *
+ * For ETSI TS 119 472-1 QEAA-6.6.2-03 / PuB-EAA-6.6.3-03 the digest algorithm SHALL be SHA-256,
+ * whose COSE algorithm identifier is -16.
+ */
+@OptIn(ExperimentalSerializationApi::class)
+data class CoseCertHash(
+    /** COSE algorithm identifier of the hash (e.g. -16 for SHA-256). */
+    val hashAlgorithm: Int,
+    val hashValue: ByteArray
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is CoseCertHash) return false
+        return hashAlgorithm == other.hashAlgorithm && hashValue.contentEquals(other.hashValue)
+    }
+
+    override fun hashCode(): Int = 31 * hashAlgorithm + hashValue.contentHashCode()
+
+    companion object {
+        /** COSE algorithm identifier for SHA-256 (RFC 9360 / IANA COSE algorithms). */
+        const val SHA_256: Int = -16
+    }
+}
+
+@OptIn(ExperimentalSerializationApi::class)
+object CoseCertHashSerializer : KSerializer<CoseCertHash> {
+    override val descriptor: SerialDescriptor =
+        ListSerializer(ByteArraySerializer()).descriptor
+
+    override fun serialize(encoder: Encoder, value: CoseCertHash) {
+        val arr = CborArray(listOf(CborInteger(value.hashAlgorithm.toLong()), CborByteString(value.hashValue)))
+        encoder.encodeSerializableValue(CborElement.serializer(), arr)
+    }
+
+    override fun deserialize(decoder: Decoder): CoseCertHash {
+        val element = decoder.decodeSerializableValue(CborElement.serializer())
+        require(element is CborArray && element.size == 2) { "x5t must be a 2-element [hashAlg, hashValue] array" }
+        val alg = element[0]
+        val hash = element[1]
+        require(hash is CborByteString) { "x5t hashValue must be a byte string" }
+        val algInt = when (alg) {
+            is CborInteger -> alg.long.toInt()
+            else -> throw IllegalArgumentException("x5t hashAlg must be an integer COSE algorithm identifier")
+        }
+        return CoseCertHash(algInt, hash.toByteArray())
+    }
+}
+
+/**
+ * Serializer for the COSE `kid` header parameter (label 4).
+ * Per RFC 8152 §3.1, `kid` is application-defined and may be a byte string or a text string.
+ * Both representations are handled: byte strings are returned as-is; text strings are
+ * UTF-8 encoded to ByteArray so callers receive a consistent type.
+ */
+@OptIn(ExperimentalSerializationApi::class)
+object CoseKidSerializer : KSerializer<ByteArray?> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("CoseKid", PrimitiveKind.STRING)
+
+    override fun serialize(encoder: Encoder, value: ByteArray?) {
+        if (value == null) encoder.encodeNull()
+        else encoder.encodeSerializableValue(CborElement.serializer(), CborByteString(value))
+    }
+
+    override fun deserialize(decoder: Decoder): ByteArray? {
+        val element = decoder.decodeSerializableValue(CborElement.serializer())
+        return when (element) {
+            is CborByteString -> element.toByteArray()
+            is CborString -> element.value.encodeToByteArray()
+            else -> null
+        }
+    }
 }

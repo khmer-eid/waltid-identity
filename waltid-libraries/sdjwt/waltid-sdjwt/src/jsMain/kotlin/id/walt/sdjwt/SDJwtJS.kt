@@ -23,7 +23,7 @@ class SDJwtJS(
             JSON.parse<dynamic>(buildJsonObject {
                 put("disclosure", it.disclosure)
                 put("salt", it.salt)
-                put("key", it.key)
+                put("key", (it as? ObjectPropertyDisclosure)?.key)
                 put("value", it.value)
             }.toString())
         }.toTypedArray()
@@ -66,7 +66,7 @@ class SDJwtJS(
         println("Formatting SD_JWT: ${disclosuresJS.joinToString(",")}")
         return listOf(jwt)
             .plus(disclosuresJS)
-            .plus((if(withKBJwt) keyBindingJwt else null)?.let { listOf(it) }
+            .plus((if (withKBJwt) keyBindingJwt else null)?.let { listOf(it) }
                 ?: (if (formatForPresentation) listOf("") else listOf()))
             .joinToString(SEPARATOR_STR)
     }

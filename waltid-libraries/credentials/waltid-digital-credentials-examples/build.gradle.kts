@@ -10,26 +10,23 @@ plugins {
 
 group = "id.walt.credentials"
 
-object Versions {
-    const val KTOR_VERSION = "3.3.3"
-}
 
 kotlin {
-    js(IR) {
+    js {
         outputModuleName.set("digital-credentials-examples")
     }
 
     sourceSets {
         commonMain.dependencies {
             // JSON
-            implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
-            implementation("org.jetbrains.kotlinx:kotlinx-serialization-cbor:1.9.0")
+            implementation(identityLibs.kotlinx.serialization.json)
+            implementation(identityLibs.kotlinx.serialization.cbor)
 
             // Ktor client
             implementation(identityLibs.bundles.waltid.ktor.client)
 
             // Coroutines
-            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
+            implementation(identityLibs.kotlinx.coroutines.core)
 
             // Logging
             implementation(identityLibs.oshai.kotlinlogging)
@@ -45,19 +42,19 @@ kotlin {
             api(project(":waltid-libraries:waltid-did"))
 
             // Hashing
-            implementation(project.dependencies.platform("org.kotlincrypto.hash:bom:0.6.1"))
-            implementation("org.kotlincrypto.hash:sha2")
+            
+            implementation(identityLibs.kotlincrypto.hash.sha2)
         }
         commonTest.dependencies {
             implementation(kotlin("test"))
-            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
+            implementation(identityLibs.kotlinx.coroutines.test)
         }
         jvmMain.dependencies {
             // Ktor client
             // implementation("io.ktor:ktor-client-okhttp:$ktor_version")
         }
         jvmTest.dependencies {
-            implementation("org.slf4j:slf4j-simple:2.0.17")
+            implementation(identityLibs.slf4j.simple)
         }
     }
 }

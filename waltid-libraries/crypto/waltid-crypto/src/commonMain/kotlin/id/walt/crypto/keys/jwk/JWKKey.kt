@@ -43,7 +43,7 @@ expect class JWKKey(jwk: String?, _keyId: String? = null) : Key {
     override suspend fun verifyJws(signedJws: String): Result<JsonElement>
 
     suspend fun decryptJwe(jweString: String): ByteArray
-    suspend fun encryptJwe(plaintext: ByteArray): String
+    suspend fun encryptJwe(plaintext: ByteArray, encAlg: String): String
 
     /*
     /**
@@ -88,6 +88,7 @@ object JWKKeyJsonFieldSerializer : KSerializer<String?> {
     override fun deserialize(decoder: Decoder): String =
         Json.encodeToString(decoder.decodeSerializableValue(JsonElement.serializer()))
 
-    override fun serialize(encoder: Encoder, value: String?) = encoder.encodeSerializableValue(JsonElement.serializer(),
+    override fun serialize(encoder: Encoder, value: String?) = encoder.encodeSerializableValue(
+        JsonElement.serializer(),
         value?.let { Json.decodeFromString<JsonElement>(it) } ?: JsonNull)
 }

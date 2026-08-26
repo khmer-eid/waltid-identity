@@ -25,7 +25,6 @@ import org.slf4j.bridge.SLF4JBridgeHandler
 import java.sql.Connection
 import kotlin.io.path.Path
 import kotlin.io.path.absolutePathString
-import kotlin.uuid.ExperimentalUuidApi
 
 object Db {
 
@@ -82,8 +81,7 @@ object Db {
         AuthnzStoredData
     ).toTypedArray()
 
-    @OptIn(ExperimentalUuidApi::class)
-    private fun recreateDatabase() {
+        private fun recreateDatabase() {
         transaction {
 //            addLogger(StdOutSqlLogger)
 
@@ -116,6 +114,9 @@ object Db {
         }
     }
 
+    private fun isSqlite(): Boolean =
+        datasourceConfig.jdbcUrl?.startsWith(SQLITE_PREFIX) == true
+
     fun start() {
         connect()
 
@@ -126,7 +127,11 @@ object Db {
             recreateDatabase()
         } else {
             transaction {
-                SchemaUtils.createMissingTablesAndColumns(*tables)
+                if (isSqlite()) {
+                    SchemaUtils.create(*tables)
+                } else {
+                    SchemaUtils.createMissingTablesAndColumns(*tables)
+                }
                 if (FeatureManager.isFeatureEnabled(FeatureCatalog.ktorAuthnzAuthenticationFeature)) {
                     SchemaUtils.create(AuthnzUsers, AuthnzAccountIdentifiers, AuthnzStoredData)
                 }

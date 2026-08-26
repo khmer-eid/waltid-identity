@@ -1,13 +1,12 @@
-@file:OptIn(ExperimentalTime::class)
-
 package id.walt.sdjwt
 
-import korlibs.crypto.SHA256
-import korlibs.crypto.encoding.ASCII
+import id.walt.sdjwt.utils.Base64Utils.encodeToBase64Url
+import korlibs.encoding.ASCII
 import kotlinx.serialization.json.*
+import org.kotlincrypto.hash.sha2.SHA256
 import kotlin.js.ExperimentalJsExport
+import kotlin.js.JsExport
 import kotlin.time.Clock
-import kotlin.time.ExperimentalTime
 
 @Suppress("NON_EXPORTABLE_TYPE")
 @OptIn(ExperimentalJsExport::class)
@@ -22,7 +21,14 @@ class KeyBindingJwt(jwt: String, header: JsonObject, payload: SDPayload) : SDJwt
     val sdHash
         get() = fullPayload["sd_hash"]!!.jsonPrimitive.content
 
-    // TODO: make use of Key interface from waltid-crypto lib instead or also?
+    /**
+     * Verify that this key-binding JWT binds the presented SD-JWT to the expected audience and nonce.
+     * @param jwtCryptoProvider JWT crypto provider that verifies this key-binding JWT signature
+     * @param reqAudience Expected `aud` claim value
+     * @param reqNonce Expected `nonce` claim value
+     * @param sdJwt Presented SD-JWT without the key-binding JWT included in the hash input
+     * @param keyId Optional key ID to select the verification key, if required by the crypto provider
+     */
     fun verifyKB(
         jwtCryptoProvider: JWTCryptoProvider,
         reqAudience: String,
@@ -35,8 +41,29 @@ class KeyBindingJwt(jwt: String, header: JsonObject, payload: SDPayload) : SDJwt
                 verify(jwtCryptoProvider, keyId).verified
     }
 
+    /**
+     * Verify that this key-binding JWT binds the presented SD-JWT to the expected audience and nonce.
+     * @param jwtCryptoProvider Async JWT crypto provider that verifies this key-binding JWT signature
+     * @param reqAudience Expected `aud` claim value
+     * @param reqNonce Expected `nonce` claim value
+     * @param sdJwt Presented SD-JWT without the key-binding JWT included in the hash input
+     */
+    @JsExport.Ignore
+    suspend fun verifyKBAsync(
+        jwtCryptoProvider: AsyncJWTCryptoProvider,
+        reqAudience: String,
+        reqNonce: String,
+        sdJwt: SDJwt,
+    ): Boolean {
+        return type == KB_JWT_TYPE && audience == reqAudience && nonce == reqNonce && sdJwt.isPresentation &&
+                getSdHash(sdJwt.toString(formatForPresentation = true, withKBJwt = false)) == sdHash &&
+                verifyAsync(jwtCryptoProvider).verified
+    }
+
     companion object {
         const val KB_JWT_TYPE = "kb+jwt"
+
+        private val sha256 = SHA256()
 
         fun parse(kbJwt: String): KeyBindingJwt {
             return SDJwt.parse(kbJwt).let { KeyBindingJwt(it.jwt, it.header, SDPayload(it.fullPayload)) }
@@ -69,6 +96,6 @@ class KeyBindingJwt(jwt: String, header: JsonObject, payload: SDPayload) : SDJwt
             )
         )
 
-        fun getSdHash(presentedSdJwt: String) = SHA256.digest(ASCII.encode(presentedSdJwt)).base64Url
+        fun getSdHash(presentedSdJwt: String) = sha256.digest(ASCII.encode(presentedSdJwt)).encodeToBase64Url()
     }
 }

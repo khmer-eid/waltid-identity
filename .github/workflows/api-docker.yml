@@ -3,19 +3,15 @@ name: Build and/or push api docker images (reusable workflow)
 on:
   workflow_call:
     inputs:
-      images:
-        description: "The json array specifying image data (built with prepare-docker workflow)"
-        required: true
-        type: string
       version:
         description: "release version"
         required: true
         type: string
       tags:
-        description: 'JSON array of desired tags, e.g. ["stable"]'
+        description: 'JSON array of extra tags to apply, e.g. ["stable", "latest"]. The version tag is always applied.'
         required: false
         type: string
-        default: '["dev"]'
+        default: '[]'
       publish:
         description: "Specifies whether to publish the images (defaults to false)"
         required: false
@@ -28,24 +24,34 @@ on:
         default: false
 
 jobs:
+  api-docker-matrix:
+    uses: ./.github/workflows/load-json.yml
+    with:
+      jsonpath: ".github/workflows/data/api-docker-matrix.json"
+
   docker:
     runs-on: ubuntu-latest
+    needs: api-docker-matrix
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(inputs.images) }}
+        include: ${{ fromJSON(needs.api-docker-matrix.outputs.json) }}
     steps:
       - name: Checkout all repos with ref fallback
-        uses: walt-id/waltid-identity/.github/actions/checkout-repos@29f904ce0de831e02fe64507ebe284b02e66b50e
+        uses: walt-id/waltid-identity/.github/actions/checkout-repos@d123dc039bd55e193b3d54350791868fcfa6ac04
         with:
           token: ${{ secrets.GH_ACCESS_TOKEN }}
       - name: Configure gradle
-        uses: walt-id/waltid-identity/.github/actions/gradle-setup-action@6bad7de2c6de9bc3faa68333de8b00be02613f4d
+        uses: walt-id/waltid-identity/.github/actions/gradle-setup-action@864f84343fdeea17f6f63434bc8036c39f178dc7
+      - name: Update version in build.gradle.kts
+        run: |
+          sed -i 's/version = ".*"/version = "${{ inputs.version }}"/' build.gradle.kts
+          sed -i 's/version = ".*"/version = "${{ inputs.version }}"/' waltid-identity/build.gradle.kts
 
       - name: Generate Docker tags
         id: tags
         run: |
-          TAGS="${{ inputs.version }},latest"
+          TAGS="${{ inputs.version }}"
           for tag in $(echo '${{ inputs.tags }}' | jq -r '.[]'); do
             TAGS="$TAGS,$tag"
           done
@@ -53,7 +59,10 @@ jobs:
       - name: Build & Publish Docker images (${{ matrix.image }})
         if: ${{ inputs.publish }}
         run: |
+          # --no-configuration-cache: the license-notice tasks pulled in by jib (enterprise-api)
+          # invoke Task.project at execution time and are not CC-compatible.
           ./gradlew ${{ matrix.commandPath }}:jib \
+            --no-configuration-cache \
             -Djib.to.tags=${{ steps.tags.outputs.tags }}
         env:
           MAVEN_USERNAME: ${{ secrets.MAVEN_USERNAME }}
@@ -65,6 +74,7 @@ jobs:
         if: ${{ inputs.publish == false && inputs.artifact == true }}
         run: |
           ./gradlew ${{ matrix.commandPath }}:jibDockerBuild \
+            --no-configuration-cache \
             -Djib.to.tags=${{ steps.tags.outputs.tags }}
         env:
           MAVEN_USERNAME: ${{ secrets.MAVEN_USERNAME }}
@@ -75,7 +85,7 @@ jobs:
         continue-on-error: false
       - name: Upload artifact
         if: ${{ inputs.artifact }}
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.image }}
           path: ${{ runner.temp }}/${{ matrix.image }}.tar.gz

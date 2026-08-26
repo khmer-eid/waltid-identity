@@ -1,33 +1,34 @@
 package id.walt.openid4vci
 
-import id.walt.openid4vci.core.AccessRequestResult
-import id.walt.openid4vci.validation.DefaultAccessRequestValidator
+import id.walt.openid4vci.requests.token.AccessTokenRequestResult
+import id.walt.openid4vci.validation.DefaultAccessTokenRequestValidator
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class DefaultAccessRequestValidatorTest {
 
-    private val validator = DefaultAccessRequestValidator()
+    private val validator = DefaultAccessTokenRequestValidator()
 
     @Test
     fun `validate accepts authorization code grant`() {
         val session = DefaultSession()
         val result = validator.validate(
             mapOf(
-                "grant_type" to GrantType.AuthorizationCode.value,
-                "client_id" to "client-123",
-                "code" to "auth-code",
-                "redirect_uri" to "https://openid4vci.walt.id/callback",
+                "grant_type" to listOf(GrantType.AuthorizationCode.value),
+                "client_id" to listOf("client-123"),
+                "code" to listOf("auth-code"),
+                "redirect_uri" to listOf("https://openid4vci.walt.id/callback"),
             ),
             session,
         )
 
         assertTrue(result.isSuccess())
-        val request = (result as AccessRequestResult.Success).request
-        assertTrue(request.getGrantTypes().contains(GrantType.AuthorizationCode.value))
-        assertEquals("auth-code", request.getRequestForm().getFirst("code"))
-        assertEquals("client-123", request.getClient().id)
+        val request = (result as AccessTokenRequestResult.Success).request
+        assertTrue(request.grantTypes.contains(GrantType.AuthorizationCode.value))
+        assertEquals(setOf(GrantType.AuthorizationCode.value), request.client.grantTypes)
+        assertEquals("auth-code", request.requestForm["code"]?.firstOrNull())
+        assertEquals("client-123", request.client.id)
     }
 
     @Test
@@ -35,33 +36,86 @@ class DefaultAccessRequestValidatorTest {
         val session = DefaultSession()
         val result = validator.validate(
             mapOf(
-                "grant_type" to GrantType.PreAuthorizedCode.value,
-                "pre-authorized_code" to "pre-auth-code",
-                "user_pin" to "1234",
-                "scope" to "openid profile",
+                "grant_type" to listOf(GrantType.PreAuthorizedCode.value),
+                "pre-authorized_code" to listOf("pre-auth-code"),
+                "tx_code" to listOf("1234"),
+                "scope" to listOf("openid profile"),
             ),
             session,
         )
 
         assertTrue(result.isSuccess())
-        val request = (result as AccessRequestResult.Success).request
-        assertTrue(request.getGrantTypes().contains(GrantType.PreAuthorizedCode.value))
-        assertEquals("pre-auth-code", request.getRequestForm().getFirst("pre-authorized_code"))
-        assertEquals("1234", request.getRequestForm().getFirst("user_pin"))
-        assertTrue(request.getRequestedScopes().contains("openid"))
+        val request = (result as AccessTokenRequestResult.Success).request
+        assertTrue(request.grantTypes.contains(GrantType.PreAuthorizedCode.value))
+        assertEquals(setOf(GrantType.PreAuthorizedCode.value), request.client.grantTypes)
+        assertEquals("pre-auth-code", request.requestForm["pre-authorized_code"]?.firstOrNull())
+        assertEquals("1234", request.requestForm["tx_code"]?.firstOrNull())
+        assertTrue(request.requestedScopes.contains("openid"))
     }
 
     @Test
     fun `validate rejects pre-authorized code grant missing code`() {
         val result = validator.validate(
             mapOf(
-                "grant_type" to GrantType.PreAuthorizedCode.value,
+                "grant_type" to listOf(GrantType.PreAuthorizedCode.value),
             ),
             DefaultSession(),
         )
 
         assertTrue(!result.isSuccess())
-        val error = (result as AccessRequestResult.Failure).error
+        val error = (result as AccessTokenRequestResult.Failure).error
+        assertEquals("invalid_request", error.error)
+    }
+
+    @Test
+    fun `validate accepts refresh token grant with client id`() {
+        val result = validator.validate(
+            mapOf(
+                "grant_type" to listOf(GrantType.RefreshToken.value),
+                "client_id" to listOf("client-123"),
+                "refresh_token" to listOf("refresh-token"),
+                "scope" to listOf("openid profile"),
+            ),
+            DefaultSession(),
+        )
+
+        assertTrue(result.isSuccess())
+        val request = (result as AccessTokenRequestResult.Success).request
+        assertTrue(request.grantTypes.contains(GrantType.RefreshToken.value))
+        assertEquals("client-123", request.client.id)
+        assertEquals("refresh-token", request.requestForm["refresh_token"]?.firstOrNull())
+        assertTrue(request.requestedScopes.contains("openid"))
+    }
+
+    @Test
+    fun `validate accepts refresh token grant without client id`() {
+        val result = validator.validate(
+            mapOf(
+                "grant_type" to listOf(GrantType.RefreshToken.value),
+                "refresh_token" to listOf("refresh-token"),
+            ),
+            DefaultSession(),
+        )
+
+        assertTrue(result.isSuccess())
+        val request = (result as AccessTokenRequestResult.Success).request
+        assertTrue(request.grantTypes.contains(GrantType.RefreshToken.value))
+        assertEquals("", request.client.id)
+        assertEquals("refresh-token", request.requestForm["refresh_token"]?.firstOrNull())
+    }
+
+    @Test
+    fun `validate rejects refresh token grant missing refresh token`() {
+        val result = validator.validate(
+            mapOf(
+                "grant_type" to listOf(GrantType.RefreshToken.value),
+                "client_id" to listOf("client-123"),
+            ),
+            DefaultSession(),
+        )
+
+        assertTrue(!result.isSuccess())
+        val error = (result as AccessTokenRequestResult.Failure).error
         assertEquals("invalid_request", error.error)
     }
 
@@ -69,13 +123,13 @@ class DefaultAccessRequestValidatorTest {
     fun `validate rejects unsupported grant type`() {
         val result = validator.validate(
             mapOf(
-                "grant_type" to "client_credentials",
+                "grant_type" to listOf("client_credentials"),
             ),
             DefaultSession(),
         )
 
         assertTrue(!result.isSuccess())
-        val error = (result as AccessRequestResult.Failure).error
+        val error = (result as AccessTokenRequestResult.Failure).error
         assertEquals("unsupported_grant_type", error.error)
     }
 }

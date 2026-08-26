@@ -17,6 +17,7 @@ import kotlinx.serialization.json.*
  */
 @OptIn(ExperimentalSerializationApi::class)
 @Serializable
+@JsonIgnoreUnknownKeys
 data class AuthorizationRequest(
     // OAuth 2.0 Parameters (Section 5 and 5.2)
     /**
@@ -137,6 +138,15 @@ data class AuthorizationRequest(
     @SerialName("id_token_type")
     val idTokenType: String? = null,
 
+    /**
+     * OPTIONAL. Per OID4VP 1.0 §5.6 (request_uri_method=post):
+     * when the wallet sends `wallet_nonce` in the POST to the request URI, the verifier
+     * MUST echo it back in the signed request object. The wallet validates this claim
+     * to ensure the request object was freshly signed for this specific request.
+     */
+    @SerialName("wallet_nonce")
+    val walletNonce: String? = null,
+
     // DC API specific parameter (Appendix A.2 of draft 28)
     /**
      * REQUIRED when signed requests (Appendix A.3.2) are used with the Digital Credentials API (DC API).
@@ -145,6 +155,18 @@ data class AuthorizationRequest(
      */
     @SerialName("expected_origins")
     val expectedOrigins: List<String>? = null,
+
+    /**
+     * Optional under OID4VP, Recommended under JAR. 
+     * OpenID4VP says client_id is required and iss is redundant
+     *    iss MAY be present in a Request Object
+     *    If present, the Wallet MUST ignore it
+     *    Neither OID4VP1.0 nor RFC 9191 require iss. And the wallet correctly ignores iss for authentication and uses client_id.
+     *
+     * Added due to requirements from the France Identitie wallet enforcing iss = clientId
+     */
+    @SerialName("iss")
+    val issuer: String? = null,
 ) {
 
     fun toHttpUrl(url: URLBuilder = URLBuilder("openid4vp://authorize")): Url {
@@ -184,6 +206,14 @@ data class AuthorizationRequest(
         }
         if (responseMode in OpenID4VPResponseMode.DIRECT_POST_RESPONSES) {
             requireNotNull(responseUri) { "response_uri must not be null if response_mode is direct_post / direct_post_jwt" }
+        }
+        if (responseType == OpenID4VPResponseType.VP_TOKEN_ID_TOKEN) {
+            require(scope?.split(' ')?.contains("openid") == true) {
+                "scope must contain openid for response_type=vp_token id_token"
+            }
+            require(idTokenType == "subject_signed") {
+                "id_token_type must be subject_signed for response_type=vp_token id_token"
+            }
         }
     }
 }

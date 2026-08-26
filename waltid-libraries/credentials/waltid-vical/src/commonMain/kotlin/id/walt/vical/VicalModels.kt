@@ -1,8 +1,11 @@
-@file:OptIn(ExperimentalTime::class, ExperimentalSerializationApi::class)
+@file:OptIn(ExperimentalSerializationApi::class)
 
 package id.walt.vical
 
+import id.walt.certificate.x509.X509CertificateUtil
 import id.walt.crypto.keys.jwk.JWKKey
+import id.walt.crypto2.CryptoRuntime
+import id.walt.crypto2.providers.cryptography.defaultSoftwareKeyProviders
 import id.walt.vical.serializers.VicalInstantSerializer
 import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.ExperimentalSerializationApi
@@ -10,8 +13,9 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.cbor.ByteString
 import kotlinx.serialization.json.JsonObject
-import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
+import id.walt.crypto2.keys.Key as Crypto2Key
+import kotlinx.io.bytestring.ByteString as KotlinByteString
 
 /**
  * Represents the payload of a VICAL. This data class is aligned with the CDDL structure
@@ -33,7 +37,9 @@ data class VicalData(
     @SerialName("nextUpdate") val nextUpdate: Instant? = null,
     @SerialName("certificateInfos") val certificateInfos: List<CertificateInfo>,
 ) {
+    @Deprecated("Use getAllAllowedCrypto2Issuers()")
     suspend fun getAllAllowedIssuers() = certificateInfos.associateWith { it.getKey() }
+    suspend fun getAllAllowedCrypto2Issuers() = certificateInfos.associateWith { it.getCrypto2Key() }
 
     override fun toString(): String =
         """
@@ -44,7 +50,10 @@ data class VicalData(
         |    Issue id: ${vicalIssueID}
         |    Next update: ${nextUpdate}
         |     
-        |    ${certificateInfos.mapIndexed { idx, cert -> cert.toString().prependIndent("    ").drop(4) }.joinToString("\n")}
+        |    ${
+            certificateInfos.mapIndexed { idx, cert -> cert.toString().prependIndent("    ").drop(4) }
+                .joinToString("\n")
+        }
         |--- End of VICAL ---
         """.trimMargin()
 }
@@ -95,7 +104,12 @@ data class CertificateInfo(
     @Serializable(with = VicalInstantSerializer::class)
     @SerialName("notAfter") val notAfter: Instant? = null,
 ) {
+    @Deprecated("Use getCrypto2Key()")
     suspend fun getKey() = JWKKey.importFromDerCertificate(certificate)
+
+    suspend fun getCrypto2Key(): Crypto2Key =
+        X509CertificateUtil.parseCertificateDerEncoded(KotlinByteString(certificate))
+            .restoreSubjectPublicKey(crypto2Runtime)
 
     // Auto-generated equals/hashCode are not sufficient for ByteArray properties.
     override fun equals(other: Any?): Boolean {
@@ -131,14 +145,14 @@ data class CertificateInfo(
         // result = 31 * result + serialNumber.contentHashCode()
         result = 31 * result + ski.contentHashCode()
         result = 31 * result + docType.hashCode()
-        result = 31 * result + (certificateProfile?.hashCode() ?: 0)
-        result = 31 * result + (issuingAuthority?.hashCode() ?: 0)
-        result = 31 * result + (issuingCountry?.hashCode() ?: 0)
-        result = 31 * result + (stateOrProvinceName?.hashCode() ?: 0)
+        result = 31 * result + certificateProfile.hashCode()
+        result = 31 * result + issuingAuthority.hashCode()
+        result = 31 * result + issuingCountry.hashCode()
+        result = 31 * result + stateOrProvinceName.hashCode()
         result = 31 * result + (issuer?.contentHashCode() ?: 0)
         result = 31 * result + (subject?.contentHashCode() ?: 0)
-        result = 31 * result + (notBefore?.hashCode() ?: 0)
-        result = 31 * result + (notAfter?.hashCode() ?: 0)
+        result = 31 * result + notBefore.hashCode()
+        result = 31 * result + notAfter.hashCode()
         return result
     }
 
@@ -159,6 +173,10 @@ data class CertificateInfo(
             |    Not after: $notAfter
             |--- End of VICAL Certificate Entry ---
             """.trimMargin()
+
+    companion object {
+        private val crypto2Runtime = CryptoRuntime(defaultSoftwareKeyProviders())
+    }
 }
 
 @Serializable
@@ -172,5 +190,3 @@ data class VicalValidationRequest(val verificationKey: JsonObject, val vicalBase
 
 @Serializable
 data class VicalValidationResponse(val vicalValid: Boolean, val vicalBase64: String? = null)
-
-

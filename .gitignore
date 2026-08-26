@@ -1,12 +1,14 @@
 .gradle
 .gradle-user-home
 **/.gradle
+.gradle-user-home/
 build/
 **/build/
 !gradle/wrapper/gradle-wrapper.jar
 !**/src/main/**/build/
 !**/src/test/**/build/
 .kotlin
+local.properties
 
 ### IntelliJ IDEA ###
 .idea/
@@ -48,6 +50,8 @@ bin/
 secret*
 */*/data
 !.github/**/data/
+!waltid-applications/waltid-web-portal2/data/
+!waltid-applications/waltid-web-portal2/data/simplePidVerificationRequests.ts
 **/*.db
 /kotlin-js-store/
 .idea/misc.xml
@@ -68,16 +72,8 @@ secret*
 **/issuer-*.pem
 **/root-*.pem
 
-# Created by https://www.toptal.com/developers/gitignore/api/xcode,swift,cocoapods
-# Edit at https://www.toptal.com/developers/gitignore?templates=xcode,swift,cocoapods
-
-### CocoaPods ###
-## CocoaPods GitIgnore Template
-
-# CocoaPods - Only use to conserve bandwidth / Save time on Pushing
-#           - Also handy if you have a large number of dependant pods
-#           - AS PER https://guides.cocoapods.org/using/using-cocoapods.html NEVER IGNORE THE LOCK FILE
-Pods/
+# Created by https://www.toptal.com/developers/gitignore/api/xcode,swift
+# Edit at https://www.toptal.com/developers/gitignore?templates=xcode,swift
 
 ### Swift ###
 # Xcode
@@ -125,16 +121,9 @@ playground.xcworkspace
 # Xcode automatically generates this directory with a .xcworkspacedata file and xcuserdata
 # hence it is not needed unless you have added a package configuration file to your project
 # .swiftpm
+.swiftpm-locks/
 
 .build/
-
-# CocoaPods
-# We recommend against adding the Pods directory to your .gitignore. However
-# you should judge for yourself, the pros and cons are mentioned at:
-# https://guides.cocoapods.org/using/using-cocoapods.html#should-i-check-the-pods-directory-into-source-control
-# Pods/
-# Add this line if you want to avoid checking in source code from the Xcode workspace
-# *.xcworkspace
 
 # Carthage
 # Add this line if you want to avoid checking in source code from Carthage dependencies.
@@ -157,6 +146,12 @@ fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output
 
+# Xcode test results
+*.xcresult
+TestResults/
+test-simulator.log
+xcodebuild-output.log
+
 # Code Injection
 # After new code Injection tools there's a generated folder /iOSInjectionProject
 # https://github.com/johnno1962/injectionforxcode
@@ -176,10 +171,8 @@ iOSInjectionProject/
 /*.gcno
 **/xcshareddata/WorkspaceSettings.xcsettings
 
+# End of https://www.toptal.com/developers/gitignore/api/xcode,swift
 
-# End of https://www.toptal.com/developers/gitignore/api/xcode,swift,cocoapods
-
-/waltid-libraries/waltid-target-ios/implementation/DerivedData**/
 /waltid-openid4vc/issuer-cert.pem
 /waltid-openid4vc/issuer-priv.pem
 /waltid-openid4vc/issuer-pub.pem
@@ -188,3 +181,14 @@ iOSInjectionProject/
 /waltid-openid4vc/root-ca-pub.pem
 /waltid-services/waltid-issuer-api/k8s/cert-device-potential.pem
 /waltid-services/waltid-issuer-api/k8s/ec_device_key.pem
+/waltid-services/waltid-etsi-plugtest-cli/verification-reports/
+/waltid-services/waltid-etsi-plugtest-cli/output/
+/waltid-services/waltid-etsi-plugtest-cli/config/key.jwk
+/waltid-services/waltid-etsi-plugtest-cli/config/cert.pem
+
+# E2E test local config
+waltid-applications/waltid-wallet-demo-ios/scripts/e2e.env
+waltid-applications/waltid-wallet-demo-android/scripts/e2e.env
+
+# OpenID conformance runner local state
+waltid-services/waltid-openid4vp-conformance-runners/mongo/

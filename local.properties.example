@@ -1,0 +1,10 @@
+# Android SDK location (required for Android builds)
+# Example: sdk.dir=/Users/username/Library/Android/sdk
+sdk.dir=/path/to/android-sdk
+
+# Optional local platform build flags.
+# These are ignored by Git when set in local.properties.
+# Command-line -P flags take precedence over local.properties.
+# local.properties takes precedence over the tracked defaults in gradle.properties.
+enableAndroidBuild=true
+enableIosBuild=true

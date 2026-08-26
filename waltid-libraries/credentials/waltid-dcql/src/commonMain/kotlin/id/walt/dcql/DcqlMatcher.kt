@@ -29,13 +29,17 @@ object DcqlMatcher {
      *
      * @param query The parsed DCQL query.
      * @param availableCredentials The list of credentials held by the wallet.
+     * @param trustedAuthoritiesChecker Optional callback invoked when a credential query has
+     *   `trusted_authorities` constraints. Receives the credential and the list of authority
+     *   queries; should return `true` if the credential satisfies at least one authority.
+     *   When null (default), trusted_authorities constraints are not enforced.
      * @return A Result containing a map where keys are CredentialQuery IDs and
      *         values are lists of matching Credentials, or a failure with an exception.
      */
     fun match(
-        // Or not suspend if availableCredentials is a List
         query: DcqlQuery,
         availableCredentials: List<DcqlCredential>,
+        trustedAuthoritiesChecker: ((DcqlCredential, List<TrustedAuthoritiesQuery>) -> Boolean)? = null,
     ): Result<Map<String, List<DcqlMatchResult>>> {
         log.debug { "Starting DCQL match. Query: $query, Available Credentials Count: ${availableCredentials.size}" }
 
@@ -56,7 +60,7 @@ object DcqlMatcher {
                     continue
                 }
 
-                val authoritiesCheck = matchesTrustedAuthorities(credential, credentialQuery.trustedAuthorities)
+                val authoritiesCheck = matchesTrustedAuthorities(credential, credentialQuery.trustedAuthorities, trustedAuthoritiesChecker)
                 if (!authoritiesCheck) {
                     log.trace { "Credential ${credential.id} failed trusted authorities check for query ${credentialQuery.id}" }
                     continue
@@ -118,8 +122,9 @@ object DcqlMatcher {
      */
     fun matchWithoutClaims(
         query: DcqlQuery,
-        availableCredentials: List<DcqlCredential>, // TODO: Have this be a flow
-    ): Result<Map<String, List<DcqlCredential>>> { // TODO: Have the result be a flow
+        availableCredentials: List<DcqlCredential>,
+        trustedAuthoritiesChecker: ((DcqlCredential, List<TrustedAuthoritiesQuery>) -> Boolean)? = null,
+    ): Result<Map<String, List<DcqlCredential>>> {
         log.debug { "Starting DCQL match. Query: $query, Available Credentials: ${availableCredentials.map { it.id }}" }
         val individualMatches = mutableMapOf<String, List<DcqlCredential>>()
 
@@ -132,7 +137,7 @@ object DcqlMatcher {
             val finalMatchesForQuery = potentialMatches.filter { credential ->
                 // Apply further filtering based on query constraints
                 matchesMeta(credential, credQuery.meta, credQuery.format) &&
-                        matchesTrustedAuthorities(credential, credQuery.trustedAuthorities) &&
+                        matchesTrustedAuthorities(credential, credQuery.trustedAuthorities, trustedAuthoritiesChecker) &&
                         matchesClaims(credential, credQuery.claims, credQuery.claimSets)
                 // Note: requireCryptographicHolderBinding check would happen during
                 // presentation generation, not typically during matching.
@@ -244,13 +249,14 @@ object DcqlMatcher {
                 log.trace { "Checking all listed claims for credential ${credential.id}" }
                 overallMatchLogic(claimsQueries)
             }
+
             else -> { // Case 2: At least one claim_set must be satisfied
                 log.trace { "Checking claim sets for credential ${credential.id}" }
                 claimSets.any { setOptionIds -> // Try to satisfy one option
                     log.trace { "Checking claim set option: $setOptionIds" }
                     val claimsForThisSet = setOptionIds.mapNotNull { claimsQueriesMapById[it] }
                     if (claimsForThisSet.size != setOptionIds.size) { // A claimId in set was not in main claims list
-                        log.warn{"Not all claim IDs in claim_set $setOptionIds found in main claims list for ${credential.id}"}
+                        log.warn { "Not all claim IDs in claim_set $setOptionIds found in main claims list for ${credential.id}" }
                         false
                     } else {
                         overallMatchLogic(claimsForThisSet) // This will populate collectedSelectedClaims if true
@@ -292,10 +298,13 @@ object DcqlMatcher {
 
         // If the credential has disclosures and is JWT-based (where SD mechanism applies)
         if (isCredentialPotentiallySD && credential.disclosures != null) {
-            // More robust path matching for SD-JWTs is needed here.
-            // This simplistic approach assumes path.last() is the claim name.
-            val targetClaimName = claimQuery.path.lastOrNull()
-            val matchingDisclosure = credential.disclosures?.find { it.name == targetClaimName /* && it.location matches claimQuery.path more precisely */ }
+            // Match on the claim name (path.last()). The disclosure's full Claim Path is available
+            // via it.location (SD-JWT VC §4.6.1) for stricter matching if needed in the future.
+            val targetClaimName = claimQuery.path.lastOrNull {
+                it is JsonPrimitive && it.isString
+            }?.jsonPrimitive?.content
+            val matchingDisclosure =
+                credential.disclosures?.find { it.name == targetClaimName }
 
             if (matchingDisclosure != null) {
                 if (!claimQuery.values.isNullOrEmpty()) {
@@ -311,7 +320,7 @@ object DcqlMatcher {
             } else {
                 // If path not found as a disclosure, it might be an always-visible claim in the SD-JWT core.
                 // Fall through to generic path resolution for such cases.
-                log.trace { "Claim path ${claimQuery.path} not found among SD disclosures for ${credential.id}. Checking core JWT."}
+                log.trace { "Claim path ${claimQuery.path} not found among SD disclosures for ${credential.id}. Checking core JWT." }
             }
         }
 
@@ -322,7 +331,7 @@ object DcqlMatcher {
         if (!claimQuery.values.isNullOrEmpty()) {
             val matchesValue = claimQuery.values.any { queryValue -> queryValue == claimJsonElement }
             if (!matchesValue) {
-                log.trace { "claimExistsAndMatchesValue: Claim path ${claimQuery.path} value '$claimJsonElement' (${if (claimJsonElement is JsonPrimitive && claimJsonElement.isString) "string" else "non-string"}) does not match required values ${claimQuery.values} in ${credential.id}" }
+                log.trace { "claimExistsAndMatchesValue: Claim path ${claimQuery.path} value '$claimJsonElement' does not match required values ${claimQuery.values} in ${credential.id} " }
                 return Result.failure(DcqlMatchException("Claim value mismatch for ${claimQuery.path}"))
             }
         }
@@ -427,16 +436,18 @@ object DcqlMatcher {
         }
     }
 
-    /** Placeholder: Check issuer constraints. */
+    /** Check issuer trust constraints. Delegates to [trustedAuthoritiesChecker] when provided. */
     private fun matchesTrustedAuthorities(
         credential: DcqlCredential,
         authoritiesQuery: List<TrustedAuthoritiesQuery>?,
+        trustedAuthoritiesChecker: ((DcqlCredential, List<TrustedAuthoritiesQuery>) -> Boolean)?,
     ): Boolean {
         if (authoritiesQuery.isNullOrEmpty()) return true
-        log.trace { "Checking trusted authorities for credential ${credential.id} (simplified: returning true)" }
-        // Actual implementation requires checking credential.issuer against
-        // the types and values in authoritiesQuery. May involve trust list lookups.
-        return true // TODO
+        if (trustedAuthoritiesChecker == null) {
+            log.trace { "trusted_authorities query present for credential ${credential.id} but no checker provided — skipping (not enforced)" }
+            return true
+        }
+        return trustedAuthoritiesChecker(credential, authoritiesQuery)
     }
 
     /** Check if a credential satisfies the claims constraints. */
@@ -503,26 +514,48 @@ object DcqlMatcher {
     }
 
     /** Basic JSON path resolver. Needs enhancement for arrays, different formats. */
-    fun resolveClaimPath(data: JsonObject, path: List<String>): JsonElement? {
-        var currentElement: JsonElement? = data["vc"] as? JsonObject ?: data
-        for (segment in path) {
-            when (currentElement) {
-                is JsonObject -> currentElement = currentElement[segment]
-                // Basic array index support (needs proper error handling/type checks)
-                is JsonArray -> {
-                    val index = segment.toIntOrNull()
-                    currentElement = if (index != null && index >= 0 && index < currentElement.size) {
-                        currentElement[index]
-                    } else {
-                        null
-                    }
-                }
+    fun resolveClaimPath(data: JsonObject, path: List<JsonElement>): JsonElement? {
+        var currentElements: List<JsonElement> = listOf(data["vc"] as? JsonObject ?: data)
 
-                else -> return null // Cannot traverse further
+        for (segment in path) {
+            val nextElements = mutableListOf<JsonElement>()
+
+            for (element in currentElements) {
+                when (element) {
+                    is JsonObject -> {
+                        if (segment is JsonPrimitive && segment.isString) {
+                            element[segment.content]?.let { nextElements.add(it) }
+                        }
+                    }
+
+                    is JsonArray -> {
+                        if (segment is JsonNull) {
+                            // null means select all elements in the array
+                            nextElements.addAll(element)
+                        } else if (segment is JsonPrimitive && segment.intOrNull != null) {
+                            // integer means select specific index
+                            val index = segment.int
+                            if (index in 0 until element.size) {
+                                nextElements.add(element[index])
+                            }
+                        }
+                    }
+
+                    else -> throw NotImplementedError()
+                }
             }
-            if (currentElement == null || currentElement is JsonNull) return null
+
+            if (nextElements.isEmpty()) return null
+            currentElements = nextElements
         }
-        return currentElement
+
+        // If the final result is a single element, return it.
+        // If it resulted from a wildcard (null), return it as a JsonArray.
+        return if (currentElements.size == 1 && path.lastOrNull() !is JsonNull) {
+            currentElements.first()
+        } else {
+            JsonArray(currentElements)
+        }
     }
 
     /** Check if the matched credentials satisfy the credential set requirements. */

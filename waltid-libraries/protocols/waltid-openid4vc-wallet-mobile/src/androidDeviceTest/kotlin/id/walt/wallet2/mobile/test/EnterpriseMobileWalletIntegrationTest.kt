@@ -1,0 +1,174 @@
+package id.walt.wallet2.mobile.test
+
+import android.content.Context
+import androidx.test.platform.app.InstrumentationRegistry
+import id.walt.mobile.test.backend.EnterpriseMobileAttestationConfig
+import id.walt.mobile.test.backend.EnterpriseMobileFixtureClient
+import id.walt.mobile.test.backend.EnterpriseMobilePlatform
+import id.walt.mobile.test.backend.EnterpriseMobileScenario
+import id.walt.wallet2.handlers.WalletIssuanceOutcome
+import id.walt.wallet2.mobile.MobileWallet
+import id.walt.wallet2.mobile.MobileWalletConfig
+import id.walt.wallet2.mobile.MobileWalletFactory
+import id.walt.wallet2.mobile.MobileWalletCredentialOffer
+import id.walt.wallet2.mobile.MobileWalletIssuanceRequest
+import id.walt.wallet2.mobile.MobileWalletPresentationResult
+import id.walt.wallet2.mobile.WalletAttestationConfig
+import id.walt.wallet2.persistence.keys.KeyUseAuthorizationPolicy
+import kotlinx.coroutines.runBlocking
+import org.junit.Test
+import java.util.UUID
+import kotlin.test.assertIs
+import kotlin.test.assertTrue
+
+@EnterpriseMobileTest
+class EnterpriseMobileWalletIntegrationTest {
+
+    private val context: Context
+        get() = InstrumentationRegistry.getInstrumentation().targetContext
+
+    private val fixtureBaseUrl: String?
+        get() = InstrumentationRegistry.getArguments().getString("enterprise_fixture_base_url")
+
+    @Test
+    fun receiveEnterpriseMdlFromEnterpriseIssuer2() = runBlocking {
+        receiveCredentialFromEnterpriseIssuer2("enterprise-mdl")
+    }
+
+    @Test
+    fun receiveEnterpriseMdlWithClientAttestationFromEnterpriseIssuer2() = runBlocking {
+        receiveCredentialFromEnterpriseIssuer2("enterprise-mdl-client-attestation")
+    }
+
+    @Test
+    fun receiveAndPresentEnterpriseMdlIssuer2Verifier2Flow() = runBlocking {
+        receiveAndPresentEnterpriseCredential("enterprise-mdl")
+    }
+
+    @Test
+    fun receiveAndPresentEnterpriseMdlWithClientAttestationIssuer2Verifier2Flow() = runBlocking {
+        receiveAndPresentEnterpriseCredential("enterprise-mdl-client-attestation")
+    }
+
+    @Test
+    fun enterpriseCredentialPersistsAcrossWalletRecreation() = runBlocking {
+        val fixture = requireFixture()
+        val scenario = enterpriseScenario(fixture, "enterprise-mdl")
+        val walletId = "android-enterprise-persist-${scenario.id}-${UUID.randomUUID()}"
+        val offer = fixture.createOffer(scenario, EnterpriseMobilePlatform.ANDROID)
+
+        val wallet1 = createWallet(walletId, offer.attestation)
+        val bootstrapResult = wallet1.bootstrap()
+        wallet1.receiveCredential(offer.offerUrl, offer.txCode)
+
+        val wallet2 = createWallet(walletId, offer.attestation)
+        val credentials = wallet2.credentials()
+        assertTrue(credentials.isNotEmpty(), "Enterprise credential should persist across wallet recreation")
+
+        val session = fixture.createVerifierSession(scenario, EnterpriseMobilePlatform.ANDROID)
+        val presentResult = wallet2.present(session.authorizationRequestUri, did = bootstrapResult.did)
+        assertIs<MobileWalletPresentationResult.Transmitted.Succeeded>(
+            presentResult,
+            "Should present persisted Enterprise credential for ${scenario.displayName}: credentials=$credentials, result=$presentResult",
+        )
+        fixture.waitForVerifierSuccess(session.sessionId)
+    }
+
+    private suspend fun receiveCredentialFromEnterpriseIssuer2(scenarioId: String) {
+        val fixture = requireFixture()
+        val scenario = enterpriseScenario(fixture, scenarioId)
+        val offer = fixture.createOffer(scenario, EnterpriseMobilePlatform.ANDROID)
+        val wallet = createWallet(
+            walletId = "android-enterprise-receive-${scenario.id}-${UUID.randomUUID()}",
+            attestation = offer.attestation,
+        )
+        wallet.bootstrap()
+
+        val credentialIds = wallet.receiveCredential(offer.offerUrl, offer.txCode)
+
+        assertTrue(
+            credentialIds.isNotEmpty(),
+            "Should receive ${scenario.displayName} from Enterprise issuer2",
+        )
+    }
+
+    private suspend fun receiveAndPresentEnterpriseCredential(scenarioId: String) {
+        val fixture = requireFixture()
+        val scenario = enterpriseScenario(fixture, scenarioId)
+        assertTrue(scenario.supportsPresentation, "${scenario.displayName} should support presentation")
+
+        val offer = fixture.createOffer(scenario, EnterpriseMobilePlatform.ANDROID)
+        val wallet = createWallet(
+            walletId = "android-enterprise-present-${scenario.id}-${UUID.randomUUID()}",
+            attestation = offer.attestation,
+        )
+        val bootstrapResult = wallet.bootstrap()
+
+        val credentialIds = wallet.receiveCredential(offer.offerUrl, offer.txCode)
+        assertTrue(credentialIds.isNotEmpty(), "Should receive ${scenario.displayName}")
+
+        val credentials = wallet.credentials()
+        assertTrue(credentials.isNotEmpty(), "Should have stored ${scenario.displayName} credentials")
+
+        val session = fixture.createVerifierSession(scenario, EnterpriseMobilePlatform.ANDROID)
+        val presentResult = wallet.present(session.authorizationRequestUri, did = bootstrapResult.did)
+        assertIs<MobileWalletPresentationResult.Transmitted.Succeeded>(
+            presentResult,
+            "Enterprise verifier2 presentation should succeed for ${scenario.displayName}: credentials=$credentials, result=$presentResult",
+        )
+
+        fixture.waitForVerifierSuccess(session.sessionId)
+    }
+
+    private fun requireFixture(): EnterpriseMobileFixtureClient {
+        val baseUrl = fixtureBaseUrl
+        require(!baseUrl.isNullOrBlank()) {
+            "Set enterprise_fixture_base_url to run Enterprise mobile integration tests"
+        }
+        return EnterpriseMobileFixtureClient(baseUrl)
+    }
+
+    private suspend fun enterpriseScenario(
+        fixture: EnterpriseMobileFixtureClient,
+        scenarioId: String,
+    ): EnterpriseMobileScenario =
+        fixture.scenarios().first { it.id == scenarioId }
+
+    private suspend fun createWallet(
+        walletId: String,
+        attestation: EnterpriseMobileAttestationConfig?,
+    ) = MobileWalletFactory(context).create(
+        MobileWalletConfig(
+            walletId = walletId,
+            attestationConfig = attestation?.toWalletAttestationConfig(),
+            onEvent = { event -> println("WALLET EVENT: $event") },
+            defaultKeyUseAuthorizationPolicy = KeyUseAuthorizationPolicy.None,
+        )
+    )
+
+    private fun EnterpriseMobileAttestationConfig.toWalletAttestationConfig() =
+        WalletAttestationConfig(
+            baseUrl = baseUrl,
+            attesterPath = attesterPath,
+            bearerToken = bearerToken,
+            hostHeader = hostHeader,
+        )
+
+    private suspend fun MobileWallet.receiveCredential(
+        offerUrl: String,
+        transactionCode: String?,
+    ): List<String> =
+        when (
+            val outcome = continuePreAuthorizedIssuance(
+                sessionId = startIssuance(
+                    MobileWalletIssuanceRequest(offer = MobileWalletCredentialOffer.Uri(offerUrl))
+                ).id,
+                transactionCode = transactionCode,
+            )
+        ) {
+            is WalletIssuanceOutcome.Stored -> outcome.credentialIds
+            is WalletIssuanceOutcome.Deferred -> error("Expected stored credentials, got deferred outcome: $outcome")
+            is WalletIssuanceOutcome.Cancelled -> error("Expected stored credentials, got cancelled outcome")
+            is WalletIssuanceOutcome.Failed -> error("Expected stored credentials, got failed outcome: ${outcome.error.message}")
+        }
+}

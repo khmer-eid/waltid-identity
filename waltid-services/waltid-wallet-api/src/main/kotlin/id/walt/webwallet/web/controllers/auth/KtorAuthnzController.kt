@@ -1,4 +1,3 @@
-@file:OptIn(ExperimentalUuidApi::class, ExperimentalTime::class)
 
 package id.walt.webwallet.web.controllers.auth
 
@@ -23,9 +22,7 @@ import io.ktor.server.routing.*
 import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 import kotlin.time.Clock
-import kotlin.time.ExperimentalTime
 import kotlin.time.toJavaInstant
-import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
 private val authConfig = ConfigManager.getConfig<KtorAuthnzConfig>()

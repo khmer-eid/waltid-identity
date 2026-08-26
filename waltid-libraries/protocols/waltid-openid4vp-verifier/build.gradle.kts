@@ -6,35 +6,31 @@ plugins {
 
 group = "id.walt.protocols"
 
-object Versions {
-    const val KTOR_VERSION = "3.3.3"
-}
 
 kotlin {
-  
+
     sourceSets {
         commonMain.dependencies {
             // Coroutines
-            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
+            implementation(identityLibs.kotlinx.coroutines.core)
 
             // HTTP
-            implementation("io.ktor:ktor-server-core:${Versions.KTOR_VERSION}")
+            implementation(identityLibs.ktor.server.core)
 
             // Logging
             implementation(identityLibs.oshai.kotlinlogging)
 
             // Kotlinx
-            implementation("org.jetbrains.kotlinx:kotlinx-datetime:0.7.1")
-            implementation("app.softwork:kotlinx-uuid-core:0.1.6")
+            implementation(identityLibs.kotlinx.datetime)
 
             // JSON
-            implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
+            implementation(identityLibs.kotlinx.serialization.json)
 
-            implementation("io.github.optimumcode:json-schema-validator:0.5.2")
-            implementation("com.eygraber:jsonpathkt-kotlinx:3.0.2")
+            implementation(identityLibs.optimumcode.jsonschemavalidator)
+            implementation(identityLibs.jsonpathkt)
 
             // CBOR
-            implementation("org.jetbrains.kotlinx:kotlinx-serialization-cbor:1.9.0")
+            implementation(identityLibs.kotlinx.serialization.cbor)
 
             /*
              * walt.id:
@@ -45,15 +41,27 @@ kotlin {
             implementation(project(":waltid-libraries:credentials:waltid-verification-policies2-vp"))
             implementation(project(":waltid-libraries:credentials:waltid-digital-credentials"))
             implementation(project(":waltid-libraries:web:waltid-ktor-notifications-core"))
+
+            implementation(project(":waltid-libraries:protocols:waltid-18013-7-verifier"))
+            implementation(project(":waltid-libraries:crypto:waltid-crypto2"))
+            implementation(project(":waltid-libraries:crypto:waltid-jose"))
+            implementation(project(":waltid-libraries:waltid-did"))
+        }
+
+        jvmMain.dependencies {
+            implementation(project(":waltid-libraries:crypto:waltid-cose"))
         }
 
         commonTest.dependencies {
             implementation(kotlin("test"))
-            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
+            implementation(identityLibs.kotlinx.coroutines.test)
         }
 
         jvmTest.dependencies {
-            implementation("org.slf4j:slf4j-simple:2.0.17")
+            implementation(identityLibs.slf4j.simple)
+            implementation(identityLibs.ktor.server.test.host)
+            implementation(project(":waltid-libraries:crypto:waltid-crypto2-migration-v1"))
+            implementation(project(":waltid-libraries:protocols:waltid-openid4vp-clientidprefix"))
         }
     }
 }

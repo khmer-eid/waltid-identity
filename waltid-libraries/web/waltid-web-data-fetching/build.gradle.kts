@@ -1,5 +1,5 @@
 plugins {
-    id("waltid.multiplatform.library")
+    id("waltid.full.library")
     id("waltid.publish.maven")
 }
 
@@ -9,7 +9,7 @@ kotlin {
     sourceSets {
         commonMain.dependencies {
             // Coroutines
-            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
+            implementation(identityLibs.kotlinx.coroutines.core)
 
             // HTTP
             implementation(identityLibs.bundles.waltid.ktor.client)
@@ -18,9 +18,12 @@ kotlin {
             implementation(identityLibs.oshai.kotlinlogging)
 
             // JSON
-            implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
+            implementation(identityLibs.kotlinx.serialization.json)
 
-            implementation("io.github.reactivecircus.cache4k:cache4k:0.14.0")
+            // Cache hashes
+            implementation(identityLibs.kotlincrypto.hash.blake2)
+
+            implementation(identityLibs.cache4k)
             // For in-memory cache
             //implementation("com.mayakapps.kache:kache:2.1.1")
             // For persistent cache
@@ -28,13 +31,49 @@ kotlin {
         }
         commonTest.dependencies {
             implementation(identityLibs.bundles.waltid.kotlintesting)
-            implementation(identityLibs.ktor.client.cio)
         }
         jvmTest.dependencies {
             implementation(identityLibs.slf4j.simple)
         }
-        jsTest.dependencies {
+
+        jvmMain.dependencies {
+            implementation(identityLibs.ktor.client.cio)
+            implementation(identityLibs.ktor.client.java)
+            implementation(identityLibs.ktor.client.apache5)
+            implementation(identityLibs.ktor.client.okhttp)
+            //implementation(identityLibs.ktor.client.jetty)
+        }
+
+        if (enableAndroidBuild) {
+            androidMain.dependencies {
+                implementation(identityLibs.ktor.client.android)
+                implementation(identityLibs.ktor.client.okhttp)
+            }
+        }
+
+        macosMain.dependencies {
+            implementation(identityLibs.ktor.client.cio)
+            implementation(identityLibs.ktor.client.darwin)
+        }
+
+        linuxMain.dependencies {
+            implementation(identityLibs.ktor.client.cio)
+            implementation(identityLibs.ktor.client.curl)
+        }
+
+        mingwMain.dependencies {
+            implementation(identityLibs.ktor.client.cio)
+            implementation(identityLibs.ktor.client.winhttp)
+        }
+
+        jsMain.dependencies {
             implementation(identityLibs.ktor.client.js)
+        }
+
+        if (enableIosBuild) {
+            iosMain.dependencies {
+                implementation(identityLibs.ktor.client.darwin)
+            }
         }
     }
 }

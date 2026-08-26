@@ -14,11 +14,13 @@ protocol.</p>
   
   <h2>Status</h2>
   <p align="center">
-    <img src="https://img.shields.io/badge/🟢%20Actively%20Maintained-success?style=for-the-badge&logo=check-circle" alt="Status: Actively Maintained" />
+    <img src="https://img.shields.io/badge/🟠%20Planned%20Deprecation-orange?style=for-the-badge&logo=clock" alt="Status: Planned Deprecation" />
     <br/>
-    <em>This project is being actively maintained by the development team at walt.id.<br />Regular updates, bug fixes, and new features are being added.</em>
+    <em>This project is still supported by the development team at walt.id, but is planned for deprecation.<br />For new OpenID4VCI 1.0 integrations, use the Issuer API 2 service.</em>
   </p>
 </div>
+
+> **Planned deprecation:** This service remains available for existing draft-based issuer integrations. New issuer integrations should use [waltid-issuer-api2](../waltid-issuer-api2), which implements OpenID4VCI 1.0.
 
 Refer to the
 [walt.id documentation](https://docs.walt.id/community-stack/issuer/getting-started)
@@ -154,6 +156,12 @@ Or, run with local config directory:
 ```bash
 docker run -p 7002:7002 -v $PWD/waltid-services/waltid-issuer-api/config:/waltid-issuer-api/config -t waltid/issuer-api
 ```
+
+### Distributed Deployments
+
+In order to run multiple issuer instances, you must configure perisistence to use a shared redis instance. You must also configure the `ciTokenKey` to be the same for all instances.
+
+**Important**: Multiple instances require a shared `ciTokenKey` configuration to properly verify tokens across the cluster.
 
 ## Join the community
 

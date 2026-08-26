@@ -26,8 +26,9 @@ class SdHashCheckSdJwtVPPolicy : DcSdJwtVPPolicy() {
 
     override suspend fun VPPolicyRunContext.verifySdJwtPolicy(
         presentation: DcSdJwtPresentation,
-        verificationContext: VerificationSessionContext
+        verificationContext: VerificationSessionContext?
     ): Result<Unit> {
+        requireSupportedSdAlgorithm(presentation.sdJwt)
         presentationRequireNotNull(
             presentation.sdHash,
             DcSdJwtPresentationValidationError.MISSING_SD_HASH

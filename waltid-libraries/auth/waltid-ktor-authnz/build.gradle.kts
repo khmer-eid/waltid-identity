@@ -8,98 +8,123 @@ group = "id.walt"
 dependencies {
     // Auth methods
     // Core Web3j library
-    implementation("org.web3j:core:4.14.0") // (5.0.0 is an invalid version!)
+    implementation(identityLibs.web3j.core)
 
     // Optional: Web3j utils
-    implementation("org.web3j:utils:4.14.0") // (5.0.0 is an invalid version!)
+    implementation(identityLibs.web3j.utils)
 
 
     // RADIUS
-    implementation("org.aaa4j.radius:aaa4j-radius-client:0.4.0")
+    implementation(identityLibs.aaa4j.radius)
 
     // LDAP
-    implementation("org.apache.directory.api:apache-ldap-api:2.1.7") {
+    implementation(identityLibs.apache.ldap.api) {
         exclude("org.apache.mina:mina-core") // Manually updated due to security CVE
         exclude("org.apache.commons:commons-lang3") // Manually updated due to security CVE
     }
-    implementation("org.apache.mina:mina-core:2.2.4")
-    implementation("org.apache.commons:commons-lang3:3.19.0")
+    implementation(identityLibs.mina.core)
+    implementation(identityLibs.commons.lang3)
 
     // TOTP/HOTP
-    implementation("com.atlassian:onetime:2.1.2")
+    implementation(identityLibs.onetime)
 
     // JWT
     implementation(project(":waltid-libraries:crypto:waltid-crypto"))
+    implementation(project(":waltid-libraries:crypto:waltid-crypto2"))
+    implementation(project(":waltid-libraries:crypto:waltid-jose"))
     implementation(project(":waltid-services:waltid-service-commons"))
-    implementation("com.nimbusds:nimbus-jose-jwt:10.6")
+    implementation(identityLibs.nimbus.jose.jwt)
 
     // Cryptography
     /*implementation(platform("dev.whyoleg.cryptography:cryptography-bom:0.4.0"))
     implementation("dev.whyoleg.cryptography:cryptography-core")
     implementation("dev.whyoleg.cryptography:cryptography-provider-jdk")*/
     implementation("com.password4j:password4j:1.8.4")
-    implementation(project.dependencies.platform("org.kotlincrypto.hash:bom:0.8.0"))
-    implementation("org.kotlincrypto.hash:sha2")
-    implementation("org.kotlincrypto.random:crypto-rand:0.6.0")
+    implementation(identityLibs.kotlincrypto.hash.sha2)
+    implementation(identityLibs.kotlincrypto.random)
 
     // Ktor server
-    implementation(platform("io.ktor:ktor-bom:3.2.2"))
-    implementation("io.ktor:ktor-server-core")
-    implementation("io.ktor:ktor-server-auth")
-    implementation("io.ktor:ktor-server-auth-jwt")
+    implementation(identityLibs.ktor.server.core)
+    implementation(identityLibs.ktor.server.auth)
+    implementation(identityLibs.ktor.server.authjwt)
     //implementation("io.ktor:ktor-server-auth-ldap")
-    implementation("io.ktor:ktor-client-core")
-    implementation("io.ktor:ktor-client-apache")
-    implementation("io.ktor:ktor-server-sessions")
-    implementation("io.ktor:ktor-server-auto-head-response")
-    implementation("io.ktor:ktor-server-double-receive")
-    implementation("io.ktor:ktor-server-webjars")
-    implementation("io.ktor:ktor-server-host-common")
-    implementation("io.ktor:ktor-server-status-pages")
-    implementation("io.ktor:ktor-server-cors")
-    implementation("io.ktor:ktor-server-default-headers")
-    implementation("io.ktor:ktor-server-forwarded-header")
-    implementation("io.ktor:ktor-server-call-logging")
-    implementation("io.ktor:ktor-server-content-negotiation")
-    implementation("io.ktor:ktor-server-cio")
-    implementation("io.ktor:ktor-server-html-builder")
+    implementation(identityLibs.ktor.server.sessions)
+    implementation(identityLibs.ktor.server.auto.head.response)
+    implementation(identityLibs.ktor.server.double.receive)
+    implementation(identityLibs.ktor.server.host.common)
+    implementation(identityLibs.ktor.server.status.pages)
+    implementation(identityLibs.ktor.server.cors)
+    implementation(identityLibs.ktor.server.default.headers)
+    implementation(identityLibs.ktor.server.forwarded.header)
+    implementation(identityLibs.ktor.server.call.logging)
+    implementation(identityLibs.ktor.server.content.negotiation)
+    implementation(identityLibs.ktor.server.cio)
+    implementation(identityLibs.ktor.server.html.builder)
 
     // Ktor client
-    implementation("io.ktor:ktor-client-core")
-    implementation("io.ktor:ktor-client-cio")
-    implementation("io.ktor:ktor-client-content-negotiation")
+    implementation(identityLibs.ktor.client.core)
+    implementation(identityLibs.ktor.client.apache5)
+    implementation(identityLibs.ktor.client.content.negotiation)
 
     // Ktor shared
-    implementation("io.ktor:ktor-serialization-kotlinx-json")
+    implementation(identityLibs.ktor.serialization.kotlinx.json)
 
     // Ktor server external
-    implementation("io.github.smiley4:ktor-openapi:5.3.0")
-    implementation("io.github.smiley4:ktor-swagger-ui:5.3.0")
-    implementation("io.github.smiley4:ktor-redoc:5.3.0")
+    implementation(identityLibs.smiley.ktor.openapi)
+    implementation(identityLibs.smiley.ktor.swaggerui)
+    implementation(identityLibs.smiley.ktor.redoc)
 
     // JSON
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-datetime:0.7.1")
-    implementation("com.eygraber:jsonpathkt-kotlinx:3.0.2")
+    implementation(identityLibs.kotlinx.serialization.json)
+    implementation(identityLibs.kotlinx.datetime)
+    implementation(identityLibs.jsonpathkt)
 
     // Logging
-    implementation("io.klogging:klogging:0.11.6")
-    implementation("io.klogging:slf4j-klogging:0.11.6")
+    implementation(identityLibs.klogging)
+    implementation(identityLibs.slf4j.klogging)
 
     // Redis
     //implementation("eu.vendeli:rethis:0.3.3")
-    implementation("io.github.domgew:kedis:0.0.11")
+    implementation(identityLibs.kedis)
 
     /* --- Testing --- */
-    testImplementation("io.ktor:ktor-client-logging")
-    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
+    testImplementation(identityLibs.ktor.client.logging)
+    testImplementation(identityLibs.kotlinx.coroutines.test)
 
     // Ktor
-    testImplementation("io.ktor:ktor-server-cio")
-    testImplementation("io.ktor:ktor-server-test-host")
+    testImplementation(identityLibs.ktor.server.cio)
+    testImplementation(identityLibs.ktor.server.test.host)
 
     // Kotlin
     testImplementation(kotlin("test"))
+}
+
+// Force-pin vulnerable transitive dependencies.
+//
+// web3j:core → tools.jackson.core:jackson-core:3.1.0
+//   SNYK-JAVA-TOOLSJACKSONCORE-15907550 (CWE-770, CVSS 8.7) — fixed in 3.1.1
+//
+// web3j:core / ktor-openapi → com.fasterxml.jackson.core:jackson-core
+//   SNYK-JAVA-COMFASTERXMLJACKSONCORE-15365924 (CWE-770) — fixed in 2.18.6; pin to latest
+//
+// web3j:core → org.bouncycastle:bcprov-jdk18on:1.80
+//   CWE-327 (broken crypto, CVSS 8.7), CWE-1240 (timing attack), CWE-90 (LDAP injection)
+//   Snyk said "no supported fix" at 1.80; 1.84 is now available
+//
+// ktor-openapi → io.netty (4.2.x branch):
+//   CVE-2026-42583 (CWE-770, CVSS 8.7) — netty-codec-compression, fixed in 4.2.13.Final
+//   CVE-2026-42587 (CWE-409, CVSS 8.7) — netty-codec-compression, fixed in 4.2.13.Final
+//   CVE-2026-42577 (CWE-772, CVSS 8.7) — netty-transport-classes-epoll, fixed in 4.2.13.Final
+//   HTTP request smuggling (CWE-444, CVSS 8.8) — netty-codec-http, fixed in 4.2.13.Final
+configurations.all {
+    resolutionStrategy.force(
+        identityLibs.jackson.core.tools,
+        identityLibs.jackson.core,
+        identityLibs.bouncycastle.prov,
+        identityLibs.netty.codec.compression,
+        identityLibs.netty.codec.http.v2,
+        identityLibs.netty.transport.classes.epoll,
+    )
 }
 
 mavenPublishing {

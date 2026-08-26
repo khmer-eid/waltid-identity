@@ -1,7 +1,4 @@
-@file:OptIn(ExperimentalTime::class)
-
 package id.walt.webwallet.service.account
-
 
 import id.walt.webwallet.db.models.Accounts
 import id.walt.webwallet.db.models.OidcLogins
@@ -10,12 +7,9 @@ import id.walt.webwallet.web.model.OidcAccountRequest
 import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 import kotlin.time.Clock
-import kotlin.time.ExperimentalTime
 import kotlin.time.toJavaInstant
-import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
-@OptIn(ExperimentalUuidApi::class)
 object OidcAccountStrategy : PasswordlessAccountStrategy<OidcAccountRequest>() {
     override suspend fun register(tenant: String, request: OidcAccountRequest): Result<RegistrationResult> {
         val jwt = verifyToken(request.token)

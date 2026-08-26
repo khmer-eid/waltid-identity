@@ -1,7 +1,5 @@
-@file:OptIn(ExperimentalUuidApi::class)
 
 package id.walt.webwallet.usecase.claim
-
 
 import TestUtils
 import id.walt.crypto.utils.UuidUtils.randomUUID
@@ -28,7 +26,6 @@ import kotlinx.serialization.json.Json
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
 class SilentClaimStrategyTest {

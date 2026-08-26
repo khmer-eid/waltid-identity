@@ -1,0 +1,334 @@
+package id.walt.crypto2.signum
+
+import at.asitplus.signum.supreme.os.IosKeychainProvider
+import at.asitplus.signum.supreme.os.IosSigner
+import at.asitplus.signum.supreme.CFCryptoOperationFailed
+import at.asitplus.signum.supreme.os.PlatformSigningProviderSigner
+import id.walt.crypto2.algorithms.SignatureAlgorithm
+import id.walt.crypto2.signum.corefoundation.waltCfEqual
+import id.walt.crypto2.keys.EcCurve
+import id.walt.crypto2.keys.KeySpec
+import id.walt.crypto2.keys.KeyUsage
+import id.walt.crypto2.keys.ProviderId
+import kotlinx.cinterop.BetaInteropApi
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.alloc
+import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.ptr
+import kotlinx.cinterop.value
+import platform.CoreFoundation.CFDictionaryAddValue
+import platform.CoreFoundation.CFDictionaryCreateMutable
+import platform.CoreFoundation.CFDictionaryGetValue
+import platform.CoreFoundation.CFRelease
+import platform.CoreFoundation.CFTypeRef
+import platform.CoreFoundation.kCFAllocatorDefault
+import platform.CoreFoundation.kCFBooleanTrue
+import platform.CoreFoundation.kCFTypeDictionaryKeyCallBacks
+import platform.CoreFoundation.kCFTypeDictionaryValueCallBacks
+import platform.Foundation.CFBridgingRelease
+import platform.Foundation.CFBridgingRetain
+import platform.Foundation.NSBundle
+import platform.Foundation.NSProcessInfo
+import platform.Security.SecItemCopyMatching
+import platform.Security.SecKeyCopyAttributes
+import platform.Security.SecKeyRef
+import platform.Security.errSecSuccess
+import platform.Security.errSecItemNotFound
+import platform.Security.kSecAttrApplicationLabel
+import platform.Security.kSecAttrApplicationTag
+import platform.Security.kSecAttrKeyClass
+import platform.Security.kSecAttrKeyClassPrivate
+import platform.Security.kSecAttrTokenID
+import platform.Security.kSecAttrTokenIDSecureEnclave
+import platform.Security.kSecClass
+import platform.Security.kSecClassKey
+import platform.Security.kSecReturnRef
+import kotlin.coroutines.cancellation.CancellationException
+
+class IosSignumKeyBackend : SignumPlatformBackend {
+    override val id = ProviderId("ios-keychain-signum")
+
+    override fun supports(spec: KeySpec, usages: Set<KeyUsage>, policy: SignumKeyPolicy): Boolean =
+        spec.isSupportedSignumSpec() &&
+            usages.all { it == KeyUsage.SIGN || it == KeyUsage.VERIFY || it == KeyUsage.KEY_AGREEMENT } &&
+            (KeyUsage.KEY_AGREEMENT !in usages || spec is KeySpec.Ec) &&
+            (KeyUsage.KEY_AGREEMENT in usages) == policy.keyAgreement &&
+            (policy.hardware != SignumHardwarePolicy.REQUIRED || spec == KeySpec.Ec(EcCurve.P256))
+
+    override suspend fun create(
+        alias: String,
+        spec: KeySpec,
+        usages: Set<KeyUsage>,
+        policy: SignumKeyPolicy,
+    ): SignumPlatformKey {
+        require(supports(spec, usages, policy)) { "iOS Signum backend does not support the requested key and policy" }
+        val signer = try {
+            createSigner(alias, spec, usages, policy.withoutUnavailableSecureEnclave())
+        } catch (cause: CancellationException) {
+            throw cause
+        } catch (cause: Throwable) {
+            // Signum turns SignumHardwarePolicy.PREFERRED into kSecAttrTokenIDSecureEnclave with no fallback of its
+            // own, so SecKeyGeneratePair fails outright wherever no Secure Enclave exists or where it rejects the
+            // configuration. PREFERRED has to mean preferred, so fall back to the software keychain. REQUIRED and
+            // attested keys keep failing loudly, and the reported protection level stays UNKNOWN either way
+            // because without an attestation the backing cannot be proven (see effectiveProtection).
+            if (
+                policy.hardware != SignumHardwarePolicy.PREFERRED ||
+                policy.attestationChallenge != null
+            ) throw cause
+            // Best-effort cleanup of anything the failed attempt left behind; a failure here must not hide `cause`.
+            try {
+                delete(alias)
+            } catch (ignored: Throwable) {
+                cause.addSuppressed(ignored)
+            }
+            createSigner(alias, spec, usages, policy.copy(hardware = SignumHardwarePolicy.DISCOURAGED))
+        }
+        try {
+            validateNativePolicy(signer, policy, alias)
+        } catch (cause: Throwable) {
+            try {
+                delete(alias)
+            } catch (cleanupFailure: Throwable) {
+                cause.addSuppressed(cleanupFailure)
+            }
+            throw cause
+        }
+        return handle(alias, spec, usages, policy, signer)
+    }
+
+    /**
+     * The iOS simulator has no Secure Enclave, so asking for one only produces a failed key generation whose
+     * half-created keychain entries then get in the way of the retry. Decide up front instead of failing first.
+     */
+    private fun SignumKeyPolicy.withoutUnavailableSecureEnclave(): SignumKeyPolicy =
+        if (hardware == SignumHardwarePolicy.PREFERRED && isSimulator) {
+            copy(hardware = SignumHardwarePolicy.DISCOURAGED)
+        } else this
+
+    private suspend fun createSigner(
+        alias: String,
+        spec: KeySpec,
+        usages: Set<KeyUsage>,
+        policy: SignumKeyPolicy,
+    ): PlatformSigningProviderSigner<*, *> = IosKeychainProvider.createSigningKey(alias) {
+        configureSignumKey(spec, usages, policy)
+    }.getOrThrow()
+
+    override suspend fun load(
+        alias: String,
+        spec: KeySpec,
+        usages: Set<KeyUsage>,
+        policy: SignumKeyPolicy,
+    ): SignumPlatformKey? {
+        val signer = IosKeychainProvider.getSignerForKey(alias).getOrElse { failure ->
+            throw failure.mapSignumFailure(alias)
+        }
+        validateNativePolicy(signer, policy, alias)
+        return handle(alias, spec, usages, policy, signer)
+    }
+
+    override suspend fun delete(alias: String) {
+        IosKeychainProvider.deleteSigningKey(alias).getOrElse { failure ->
+            val mapped = failure.mapSignumFailure(alias)
+            if (mapped is SignumKeyNotFoundException) return
+            throw mapped
+        }
+    }
+
+    private fun handle(
+        alias: String,
+        spec: KeySpec,
+        usages: Set<KeyUsage>,
+        policy: SignumKeyPolicy,
+        signer: PlatformSigningProviderSigner<*, *>,
+    ): SignumPlatformKey {
+        val attestation = signer.toAttestation()
+        return SignumPlatformKeyHandle(
+            alias = alias,
+            spec = spec,
+            // REQUIRED has already been independently checked against the Keychain private-key attributes above;
+            // only then may the backend report the observed Secure Enclave hardware level.
+            protectionLevel = if (policy.hardware == SignumHardwarePolicy.REQUIRED) {
+                SignumProtectionLevel.HARDWARE
+            } else policy.effectiveProtection(attestation),
+            attestation = attestation,
+            authentication = policy.authentication,
+            signerFor = { algorithm: SignatureAlgorithm ->
+                IosKeychainProvider.getSignerForKey(alias) {
+                    configureSignumOperation(algorithm, policy.authentication)
+                }.getOrElse { failure ->
+                    throw failure.mapSignumFailure(alias)
+                }
+            },
+            nativePublicKey = signer.publicKey,
+            keyAgreementEnabled = KeyUsage.KEY_AGREEMENT in usages && policy.keyAgreement,
+        )
+    }
+
+    @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
+    private fun validateNativePolicy(
+        signer: PlatformSigningProviderSigner<*, *>,
+        policy: SignumKeyPolicy,
+        alias: String,
+    ) {
+        if (policy.hardware != SignumHardwarePolicy.REQUIRED &&
+            !policy.authentication.isBiometricCurrentSetEveryUse() &&
+            !policy.authentication.isBiometricTimedReuse()
+        ) return
+        val requiresAuthentication = policy.authentication.isBiometricCurrentSetEveryUse() ||
+            policy.authentication.isBiometricTimedReuse()
+        val iosSigner = if (requiresAuthentication) {
+            signer as? IosSigner
+                ?: throw SignumKeyPolicyMismatchException(alias, "the native signer is not Keychain-backed")
+        } else {
+            null
+        }
+        validateIosNativePolicy(
+            alias = alias,
+            policy = policy,
+            needsAuthentication = iosSigner?.needsAuthentication ?: false,
+            needsAuthenticationForEveryUse = iosSigner?.needsAuthenticationForEveryUse ?: false,
+            isSecureEnclave = if (policy.hardware == SignumHardwarePolicy.REQUIRED) {
+                isSecureEnclaveKey(alias)
+            } else {
+                false
+            },
+        )
+    }
+
+    internal fun validateIosNativePolicy(
+        alias: String,
+        policy: SignumKeyPolicy,
+        needsAuthenticationForEveryUse: Boolean,
+        needsAuthentication: Boolean = needsAuthenticationForEveryUse,
+        isSecureEnclave: Boolean,
+    ) {
+        if (policy.hardware == SignumHardwarePolicy.REQUIRED && !isSecureEnclave) {
+            throw SignumKeyPolicyMismatchException(alias, "the native key is not Secure Enclave-backed")
+        }
+        // Signum exposes only whether authentication is required and reusable. Its pinned public
+        // API does not expose the effective positive timeout after restoration to compare it.
+        if (
+            policy.authentication.isBiometricCurrentSetEveryUse() &&
+            (!needsAuthentication || !needsAuthenticationForEveryUse)
+        ) {
+            throw SignumKeyPolicyMismatchException(
+                alias,
+                "the native key does not enforce biometric authentication for every use",
+            )
+        }
+        if (
+            policy.authentication.isBiometricTimedReuse() &&
+            (needsAuthenticationForEveryUse || !needsAuthentication)
+        ) {
+            throw SignumKeyPolicyMismatchException(
+                alias,
+                "the native key does not enforce reusable biometric authentication",
+            )
+        }
+    }
+
+    @Suppress("UNCHECKED_CAST", "DEPRECATION", "DEPRECATION_ERROR")
+    @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
+    private fun isSecureEnclaveKey(alias: String): Boolean = memScoped {
+        val keyRef = alloc<platform.CoreFoundation.CFTypeRefVar>()
+        privateKeyTags.any { tag ->
+            val query = RetainedDictionary(6)
+            query.add(kSecClass, kSecClassKey)
+            // The shared-Keychain public half does not reliably include kSecAttrTokenID.
+            // SecKeyCopyAttributes on the matching private key reads its attributes without
+            // performing an authentication-gated operation, and it exposes the actual backing.
+            query.add(kSecAttrKeyClass, kSecAttrKeyClassPrivate)
+            query.addRetained(kSecAttrApplicationLabel, alias)
+            query.addRetained(kSecAttrApplicationTag, tag)
+            query.add(kSecReturnRef, kCFBooleanTrue)
+            try {
+                keyRef.value = null
+                when (val status = SecItemCopyMatching(query.dictionary, keyRef.ptr)) {
+                    errSecItemNotFound -> false
+                    errSecSuccess -> {
+                        val result = keyRef.value
+                            ?: error("Secure Enclave private-key lookup returned success without a result")
+                        try {
+                            val nativeKey = result as? SecKeyRef
+                                ?: error("Secure Enclave private-key lookup returned an unexpected result")
+                            val attributes = SecKeyCopyAttributes(nativeKey)
+                                ?: error("Secure Enclave private-key attributes were unavailable")
+                            try {
+                                CFDictionaryGetValue(attributes, kSecAttrTokenID)?.let {
+                                    waltCfEqual(it, kSecAttrTokenIDSecureEnclave)
+                                } == true
+                            } finally {
+                                CFRelease(attributes)
+                            }
+                        } finally {
+                            CFRelease(result)
+                            keyRef.value = null
+                        }
+                    }
+                    else -> throw CFCryptoOperationFailed(
+                        thing = "inspect Secure Enclave private key",
+                        osStatus = status,
+                    )
+                }
+            } finally {
+                keyRef.value = null
+                query.release()
+            }
+        }
+    }
+
+    @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
+    private class RetainedDictionary(capacity: Long) {
+        val dictionary = CFDictionaryCreateMutable(
+            kCFAllocatorDefault,
+            capacity,
+            kCFTypeDictionaryKeyCallBacks.ptr,
+            kCFTypeDictionaryValueCallBacks.ptr,
+        )
+        private val retainedValues = mutableListOf<CFTypeRef?>()
+
+        fun add(key: CFTypeRef?, value: CFTypeRef?) {
+            CFDictionaryAddValue(dictionary, key, value)
+        }
+
+        fun addRetained(key: CFTypeRef?, value: Any?) {
+            val retained = CFBridgingRetain(value)
+            retainedValues += retained
+            CFDictionaryAddValue(dictionary, key, retained)
+        }
+
+        fun release() {
+            retainedValues.forEach { CFBridgingRelease(it) }
+            CFRelease(dictionary)
+        }
+    }
+}
+
+private val privateKeyTags: List<String> by lazy {
+    listOfNotNull(
+        "supreme.privatekey",
+        NSBundle.mainBundle.bundleIdentifier?.let { "supreme.privatekey-$it" },
+    )
+}
+
+internal fun Throwable.mapSignumFailure(alias: String): Throwable {
+    val causes = generateSequence(this) { it.cause }.toList()
+    return if (causes.filterIsInstance<CFCryptoOperationFailed>().any { it.osStatus == errSecItemNotFound }) {
+        SignumKeyNotFoundException(alias, this)
+    } else {
+        this
+    }
+}
+
+private fun KeySpec.isSupportedSignumSpec(): Boolean = when (this) {
+    is KeySpec.Ec -> curve == EcCurve.P256 || curve == EcCurve.P384 || curve == EcCurve.P521
+    is KeySpec.Rsa -> bits == 2048 || bits == 3072 || bits == 4096
+    else -> false
+}
+
+/** `simctl spawn` exports the simulator device environment; a real device never has it. */
+private val isSimulator: Boolean by lazy {
+    NSProcessInfo.processInfo.environment.keys.any { it == "SIMULATOR_UDID" || it == "SIMULATOR_DEVICE_NAME" }
+}

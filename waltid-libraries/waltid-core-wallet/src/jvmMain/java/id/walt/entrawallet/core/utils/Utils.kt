@@ -4,9 +4,8 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import java.io.InputStream
-import java.util.*
-
-@OptIn(ExperimentalStdlibApi::class)
+import java.util.Base64
+import java.util.BitSet
 object StringUtils {
     fun hexToInt(hex: String) = hex.removePrefix("0x").hexToInt()
     fun hexToByteArray(hex: String) = hex.removePrefix("0x").hexToByteArray()
@@ -40,13 +39,9 @@ object BitstringUtils {
         inputStream.use { stream ->
             //TODO: bitSize constraints
             val bitStartPosition = index * bitSize.toUInt()
-            logger.debug { "bitStartPosition: $bitStartPosition" }
             val byteStart = bitStartPosition / 8u
-            logger.debug { "skipping: $byteStart bytes" }
             stream.skip(byteStart.toLong())
-            logger.debug { "available: ${stream.available()} bytes" }
             val bytesToRead = (bitSize - 1) / 8 + 1
-            logger.debug { "readingNext: $bytesToRead bytes" }
             extractBitValue(stream.readNBytes(bytesToRead), index, bitSize.toUInt())
         }
 

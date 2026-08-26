@@ -1,4 +1,3 @@
-@file:OptIn(ExperimentalUuidApi::class, ExperimentalTime::class)
 
 package id.walt.webwallet.web.controllers.auth
 
@@ -15,7 +14,6 @@ import id.walt.commons.web.UnauthorizedException
 import id.walt.commons.web.WebException
 import id.walt.crypto.keys.jwk.JWKKey
 import id.walt.crypto.utils.JsonUtils.toJsonElement
-import id.walt.entrawallet.core.utils.UuidSerializer
 import id.walt.ktorauthnz.auth.getAuthenticatedAccount
 import id.walt.oid4vc.definitions.JWTClaims
 import id.walt.webwallet.FeatureCatalog
@@ -24,6 +22,7 @@ import id.walt.webwallet.db.models.AccountWalletMappings
 import id.walt.webwallet.db.models.AccountWalletPermissions
 import id.walt.webwallet.service.WalletServiceManager
 import id.walt.webwallet.service.account.*
+import id.walt.webwallet.utils.UuidSerializer
 import id.walt.webwallet.web.InsufficientPermissionsException
 import id.walt.webwallet.web.model.AccountRequest
 import id.walt.webwallet.web.model.EmailAccountRequest
@@ -47,9 +46,7 @@ import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 import java.time.temporal.ChronoUnit
 import kotlin.time.Clock
-import kotlin.time.ExperimentalTime
 import kotlin.time.toJavaInstant
-import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 import kotlin.uuid.toJavaUuid
 
@@ -109,7 +106,7 @@ data class LoginResponseData(
 }
 
 object AuthKeys {
-    private val config = ConfigManager.getConfig<AuthConfig>()
+    private val config get() = ConfigManager.getConfig<AuthConfig>()
     val encryptionKey: ByteArray = config.encryptionKey.encodeToByteArray()
     val signKey: ByteArray = config.signKey.encodeToByteArray()
 
@@ -198,7 +195,6 @@ fun ApplicationCall.getUserId() =
         ?: principal<UserIdPrincipal>() // bearer is registered with no name for some reason
         ?: throw UnauthorizedException("Could not find user authorization within request.")
 
-@OptIn(ExperimentalUuidApi::class)
 suspend fun ApplicationCall.getUserUUID() =
     runCatching {
         when {
@@ -208,7 +204,6 @@ suspend fun ApplicationCall.getUserUUID() =
         }
     }.getOrElse { throw IllegalArgumentException("Invalid user id: $it") }
 
-@OptIn(ExperimentalUuidApi::class)
 fun ApplicationCall.getWalletId() =
     runCatching {
         Uuid.parse(parameters["wallet"] ?: throw IllegalArgumentException("No wallet ID provided"))
@@ -217,7 +212,6 @@ fun ApplicationCall.getWalletId() =
             ensurePermissionsForWallet(AccountWalletPermissions.READ_ONLY, walletId = it)
         }
 
-@OptIn(ExperimentalUuidApi::class)
 suspend fun ApplicationCall.getWalletService(walletId: Uuid? = null) =
     WalletServiceManager.getWalletService("", getUserUUID(), walletId ?: getWalletId()) // FIXME -> TENANT HERE
 
