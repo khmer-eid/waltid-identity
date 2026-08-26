@@ -4,18 +4,24 @@ on:
   push:
 
 permissions:
-  pages: write
   contents: write
   packages: write
 
 jobs:
   release:
     runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v2
 
-    - name: Publish Helm charts
-      uses: stefanprodan/helm-gh-pages@master
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-        charts_dir: helm-charts
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Add lint values
+        run: |
+          printf '\nglobal:\n  deploymentId: lint\n' >> helm-charts/common/values.yaml
+          printf '\nglobal:\n  deploymentId: lint\n' >> helm-charts/web-wallet/values.yaml
+
+      - name: Publish Helm charts
+        uses: stefanprodan/helm-gh-pages@master
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          charts_dir: helm-charts
+          branch: main
