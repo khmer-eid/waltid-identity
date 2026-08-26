@@ -3,6 +3,10 @@ name: helm-release
 on:
   push:
 
+permissions:
+  contents: read
+  packages: write
+
 jobs:
   release:
     runs-on: ubuntu-latest
