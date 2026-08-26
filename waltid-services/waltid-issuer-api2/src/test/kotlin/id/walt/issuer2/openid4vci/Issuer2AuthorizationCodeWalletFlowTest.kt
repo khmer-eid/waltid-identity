@@ -1,0 +1,475 @@
+package id.walt.issuer2.openid4vci
+
+import id.walt.crypto.keys.KeyType
+import id.walt.crypto.keys.jwk.JWKKey
+import id.walt.issuer2.controller.openapi.Issuer2RequestExamples
+import id.walt.issuer2.testsupport.Issuer2BrowserTestServer
+import id.walt.issuer2.testsupport.Issuer2CredentialScenarios
+import id.walt.issuer2.testsupport.Issuer2WalletFlowDriver
+import id.walt.issuer2.testsupport.KTOR_TEST_APPLICATION_BASE_URL
+import id.walt.issuer2.testsupport.apiClient
+import id.walt.issuer2.testsupport.assertBearerAccessToken
+import id.walt.issuer2.testsupport.assertIsoMdlCredentialPayload
+import id.walt.issuer2.testsupport.assertJwtVcJsonCredentialPayload
+import id.walt.issuer2.testsupport.assertRefreshToken
+import id.walt.issuer2.testsupport.assertSdJwtVcCredentialPayload
+import id.walt.issuer2.testsupport.assertSessionStatus
+import id.walt.issuer2.testsupport.clearIssuer2TestEnvironment
+import id.walt.issuer2.testsupport.createCredentialOffer
+import id.walt.issuer2.testsupport.createIssuer2ClientAttestationTestMaterial
+import id.walt.issuer2.testsupport.createWalletFlowCredentialOffer
+import id.walt.issuer2.testsupport.installIssuer2WithConfigFiles
+import id.walt.issuer2.testsupport.listSessions
+import id.walt.issuer2.testsupport.browser.Issuer2KeycloakAuthorizationDriver
+import id.walt.issuer2.service.openid4vci.decodeExternalLoginAuthorizationParameters
+import id.walt.openid4vci.offers.AuthenticationMethod
+import id.walt.openid4vci.offers.IssuerStateMode
+import id.walt.openid4vci.clientauth.attestation.ClientAttestationHeaders
+import id.waltid.openid4vci.wallet.attestation.ClientAttestationAssembler
+import id.waltid.openid4vci.wallet.attestation.GenericHttpWalletAttestationProvider
+import id.waltid.openid4vci.wallet.attestation.PUBLIC_JWK_PLACEHOLDER
+import id.waltid.openid4vci.wallet.oauth.ClientConfiguration
+import io.ktor.client.request.forms.FormDataContent
+import io.ktor.client.request.get
+import io.ktor.client.request.header
+import io.ktor.client.request.parameter
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
+import io.ktor.client.statement.bodyAsText
+import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpStatusCode
+import io.ktor.http.Parameters
+import io.ktor.http.Url
+import io.ktor.server.testing.testApplication
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+import org.junit.jupiter.api.AfterEach
+import org.junit.jupiter.api.Tag
+import org.junit.jupiter.api.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertNotEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
+
+class Issuer2AuthorizationCodeWalletFlowTest {
+
+    @AfterEach
+    fun clearConfig() {
+        clearIssuer2TestEnvironment()
+    }
+
+    @Test
+    @Tag("browser")
+    @Tag("keycloak")
+    fun walletCanCompleteAuthorizationCodeFlowWithDefaultKeycloak() = runBlocking {
+        Issuer2BrowserTestServer().use { server ->
+            server.start()
+            val client = server.httpClient()
+            try {
+                val scenario = Issuer2CredentialScenarios.openBadgeCredential
+                val walletClientConfig = ClientConfiguration(
+                    clientId = EUDI_WALLET_CLIENT_ID,
+                    redirectUris = listOf(WALLET_REDIRECT_URI),
+                )
+                val walletFlow = Issuer2WalletFlowDriver(
+                    client = client,
+                    walletClientConfig = walletClientConfig,
+                    attestationAssembler = eudiAttestationAssembler(),
+                )
+
+                val createdOffer =
+                    client.createCredentialOffer(Issuer2RequestExamples.PROFILE_AUTHORIZED_OFFER_BY_REFERENCE)
+                assertEquals(AuthenticationMethod.AUTHORIZED, createdOffer.authMethod)
+                assertEquals(IssuerStateMode.INCLUDE, createdOffer.issuerStateMode)
+                assertSessionStatus(client, createdOffer.offerId, "ACTIVE")
+
+                val resolvedOffer = walletFlow.resolve(createdOffer)
+                val issuerState = assertNotNull(resolvedOffer.offer.grants?.authorizationCode?.issuerState)
+                assertEquals(createdOffer.offerId, issuerState)
+
+                val authorizationUrl = walletFlow.buildAuthorizationRequestUrl(
+                    resolvedOffer = resolvedOffer,
+                    scenario = scenario,
+                    issuerState = issuerState,
+                )
+                val authorizationCode = Issuer2KeycloakAuthorizationDriver().loginAndGetAuthorizationCode(
+                    authorizeUrl = authorizationUrl,
+                    redirectUri = WALLET_REDIRECT_URI,
+                    expectedState = Url(authorizationUrl).parameters["state"],
+                )
+
+                val tokenResponse = walletFlow.exchangeAuthorizationCode(
+                    resolvedOffer = resolvedOffer,
+                    code = authorizationCode,
+                )
+                assertBearerAccessToken(tokenResponse)
+                val refreshToken = assertRefreshToken(tokenResponse)
+
+                val refreshedTokenResponse = walletFlow.refreshAccessToken(
+                    resolvedOffer = resolvedOffer,
+                    refreshToken = refreshToken,
+                )
+                assertBearerAccessToken(refreshedTokenResponse)
+                val rotatedRefreshToken = assertRefreshToken(refreshedTokenResponse)
+                assertNotEquals(refreshToken, rotatedRefreshToken)
+
+                val credentialPayload = walletFlow.requestCredential(
+                    resolvedOffer = resolvedOffer,
+                    accessToken = refreshedTokenResponse.access_token,
+                )
+                assertJwtVcJsonCredentialPayload(credentialPayload)
+                assertSessionStatus(client, createdOffer.offerId, "SUCCESSFUL")
+            } finally {
+                client.close()
+            }
+        }
+    }
+
+    @Test
+    @Tag("browser")
+    @Tag("keycloak")
+    fun walletCanCompleteAuthorizationCodeSdJwtVcFlowWithDefaultKeycloak() = runBlocking {
+        Issuer2BrowserTestServer().use { server ->
+            server.start()
+            val client = server.httpClient()
+            try {
+                val scenario = Issuer2CredentialScenarios.identitySdJwt
+                val walletClientConfig = ClientConfiguration(
+                    clientId = EUDI_WALLET_CLIENT_ID,
+                    redirectUris = listOf(WALLET_REDIRECT_URI),
+                )
+                val walletFlow = Issuer2WalletFlowDriver(
+                    client = client,
+                    walletClientConfig = walletClientConfig,
+                    attestationAssembler = eudiAttestationAssembler(),
+                )
+
+                val createdOffer = client.createWalletFlowCredentialOffer(
+                    scenario = scenario,
+                    authenticationMethod = AuthenticationMethod.AUTHORIZED,
+                )
+                assertEquals(AuthenticationMethod.AUTHORIZED, createdOffer.authMethod)
+                assertEquals(IssuerStateMode.INCLUDE, createdOffer.issuerStateMode)
+                assertSessionStatus(client, createdOffer.offerId, "ACTIVE")
+
+                val resolvedOffer = walletFlow.resolve(createdOffer)
+                assertEquals(listOf(scenario.credentialConfigurationId), resolvedOffer.offer.credentialConfigurationIds)
+                val issuerState = assertNotNull(resolvedOffer.offer.grants?.authorizationCode?.issuerState)
+                assertEquals(createdOffer.offerId, issuerState)
+
+                val authorizationUrl = walletFlow.buildAuthorizationRequestUrl(
+                    resolvedOffer = resolvedOffer,
+                    scenario = scenario,
+                    issuerState = issuerState,
+                )
+                val authorizationCode = Issuer2KeycloakAuthorizationDriver().loginAndGetAuthorizationCode(
+                    authorizeUrl = authorizationUrl,
+                    redirectUri = WALLET_REDIRECT_URI,
+                    expectedState = Url(authorizationUrl).parameters["state"],
+                )
+
+                val tokenResponse = walletFlow.exchangeAuthorizationCode(
+                    resolvedOffer = resolvedOffer,
+                    code = authorizationCode,
+                )
+                assertBearerAccessToken(tokenResponse)
+                assertRefreshToken(tokenResponse)
+
+                val credentialPayload = walletFlow.requestCredential(
+                    resolvedOffer = resolvedOffer,
+                    accessToken = tokenResponse.access_token,
+                    includeDidInProof = false,
+                )
+                assertSdJwtVcCredentialPayload(
+                    credentialPayload = credentialPayload,
+                    expectedVctSuffix = "/${scenario.credentialConfigurationId}",
+                    expectedDisclosureKeys = setOf("birthdate"),
+                    expectedClaims = mapOf(
+                        "family_name" to "Doe",
+                        "given_name" to "Jane",
+                    ),
+                )
+                assertSessionStatus(client, createdOffer.offerId, "SUCCESSFUL")
+            } finally {
+                client.close()
+            }
+        }
+    }
+
+    @Test
+    @Tag("browser")
+    @Tag("keycloak")
+    fun walletCanCompleteAuthorizationCodeMdocFlowWithDefaultKeycloak() = runBlocking {
+        Issuer2BrowserTestServer().use { server ->
+            server.start()
+            val client = server.httpClient()
+            try {
+                val scenario = Issuer2CredentialScenarios.isoMdl
+                val walletClientConfig = ClientConfiguration(
+                    clientId = EUDI_WALLET_CLIENT_ID,
+                    redirectUris = listOf(WALLET_REDIRECT_URI),
+                )
+                val walletFlow = Issuer2WalletFlowDriver(
+                    client = client,
+                    walletClientConfig = walletClientConfig,
+                    attestationAssembler = eudiAttestationAssembler(),
+                )
+
+                val createdOffer = client.createWalletFlowCredentialOffer(
+                    scenario = scenario,
+                    authenticationMethod = AuthenticationMethod.AUTHORIZED,
+                )
+                assertEquals(AuthenticationMethod.AUTHORIZED, createdOffer.authMethod)
+                assertEquals(IssuerStateMode.INCLUDE, createdOffer.issuerStateMode)
+                assertSessionStatus(client, createdOffer.offerId, "ACTIVE")
+
+                val resolvedOffer = walletFlow.resolve(createdOffer)
+                assertEquals(listOf(scenario.credentialConfigurationId), resolvedOffer.offer.credentialConfigurationIds)
+                val issuerState = assertNotNull(resolvedOffer.offer.grants?.authorizationCode?.issuerState)
+                assertEquals(createdOffer.offerId, issuerState)
+
+                val authorizationUrl = walletFlow.buildAuthorizationRequestUrl(
+                    resolvedOffer = resolvedOffer,
+                    scenario = scenario,
+                    issuerState = issuerState,
+                )
+                val authorizationCode = Issuer2KeycloakAuthorizationDriver().loginAndGetAuthorizationCode(
+                    authorizeUrl = authorizationUrl,
+                    redirectUri = WALLET_REDIRECT_URI,
+                    expectedState = Url(authorizationUrl).parameters["state"],
+                )
+
+                val tokenResponse = walletFlow.exchangeAuthorizationCode(
+                    resolvedOffer = resolvedOffer,
+                    code = authorizationCode,
+                )
+                assertBearerAccessToken(tokenResponse)
+                assertRefreshToken(tokenResponse)
+
+                val credentialPayload = walletFlow.requestCredential(
+                    resolvedOffer = resolvedOffer,
+                    accessToken = tokenResponse.access_token,
+                    includeDidInProof = false,
+                )
+                assertIsoMdlCredentialPayload(
+                    credentialPayload = credentialPayload,
+                    expectedClaims = mapOf(
+                        "family_name" to "Doe",
+                        "given_name" to "Jane",
+                        "document_number" to "DL-AT-2025-00018427",
+                    ),
+                )
+                assertSessionStatus(client, createdOffer.offerId, "SUCCESSFUL")
+            } finally {
+                client.close()
+            }
+        }
+    }
+
+    @Test
+    fun walletAuthorizationRequestRedirectsToExternalLoginWithIssuerState() = testApplication {
+        val scenario = Issuer2CredentialScenarios.openBadgeCredential
+        installIssuer2WithConfigFiles()
+        val client = apiClient()
+        val walletFlow = Issuer2WalletFlowDriver(client)
+
+        val createdOffer = client.createCredentialOffer(Issuer2RequestExamples.PROFILE_AUTHORIZED_OFFER_BY_REFERENCE)
+        assertEquals(AuthenticationMethod.AUTHORIZED, createdOffer.authMethod)
+        assertEquals(IssuerStateMode.INCLUDE, createdOffer.issuerStateMode)
+        assertSessionStatus(client, createdOffer.offerId, "ACTIVE")
+
+        val resolvedOffer = walletFlow.resolve(createdOffer)
+        assertEquals(listOf(scenario.credentialConfigurationId), resolvedOffer.offer.credentialConfigurationIds)
+
+        // Runtime-overridden offers use issuer_state as the stable session handle.
+        assertEquals(createdOffer.offerId, resolvedOffer.offer.grants?.authorizationCode?.issuerState)
+
+        val externalLoginRedirect = walletFlow.startAuthorizationCodeFlowWithIssuerState(
+            createdOffer = createdOffer,
+            resolvedOffer = resolvedOffer,
+        )
+        assertTrue(externalLoginRedirect.contains("/openid4vci/external_login/"))
+        assertSessionStatus(client, createdOffer.offerId, "ACTIVE")
+    }
+
+    @Test
+    fun walletAuthorizationRequestWithoutIssuerStateCreatesProfileDerivedSession() = testApplication {
+        val scenario = Issuer2CredentialScenarios.openBadgeCredential
+        installIssuer2WithConfigFiles()
+        val client = apiClient()
+        val walletFlow = Issuer2WalletFlowDriver(client)
+
+        val createdOffer = client.createCredentialOffer(
+            Issuer2RequestExamples.PROFILE_AUTHORIZED_OFFER_BY_VALUE_WITHOUT_ISSUER_STATE
+        )
+        assertEquals(IssuerStateMode.OMIT, createdOffer.issuerStateMode)
+        assertSessionStatus(client, createdOffer.offerId, "ACTIVE")
+
+        val resolvedOffer = walletFlow.resolve(createdOffer)
+        assertNull(resolvedOffer.offer.grants?.authorizationCode?.issuerState)
+
+        val externalLoginRedirect = walletFlow.startAuthorizationCodeFlowWithoutIssuerState(resolvedOffer)
+        assertTrue(externalLoginRedirect.contains("/openid4vci/external_login/"))
+
+        val authorizationSession = client.listSessions().single { session ->
+            session.profileId == scenario.profileId &&
+                    session.sessionId != createdOffer.offerId &&
+                    session.authorizationRequest != null
+        }
+        assertNotEquals(createdOffer.offerId, authorizationSession.sessionId)
+        assertEquals(AuthenticationMethod.AUTHORIZED, authorizationSession.authenticationMethod)
+        assertEquals(scenario.credentialConfigurationId, authorizationSession.credentialConfigurationId)
+        assertNotNull(authorizationSession.authorizationRequest?.get("authorization_details"))
+    }
+
+    @Test
+    fun offerlessAuthorizationRequestCreatesProfileDerivedSessionFromScope() = testApplication {
+        val scenario = Issuer2CredentialScenarios.openBadgeCredential
+        installIssuer2WithConfigFiles()
+        val client = apiClient()
+
+        val walletRedirectUri = "https://wallet.example/callback?dummy1=foo&dummy2=ipsum"
+        val authorizationResponse = client.get("/openid4vci/authorize") {
+            parameter("response_type", "code")
+            parameter("client_id", "issuer2-wallet-test")
+            parameter("redirect_uri", walletRedirectUri)
+            parameter("state", "offerless-state")
+            parameter("scope", scenario.credentialConfigurationId)
+        }
+
+        assertEquals(HttpStatusCode.Found, authorizationResponse.status, authorizationResponse.bodyAsText())
+        val externalLoginRedirect = assertNotNull(authorizationResponse.headers[HttpHeaders.Location])
+        assertTrue(externalLoginRedirect.contains("/openid4vci/external_login/"))
+        val authorizationRequestParameters = externalLoginRedirect
+            .substringAfter("/external_login/")
+            .decodeExternalLoginAuthorizationParameters()
+        assertEquals(listOf(walletRedirectUri), authorizationRequestParameters["redirect_uri"])
+
+        val authorizationSession = client.listSessions().single { session ->
+            session.profileId == scenario.profileId &&
+                    session.authorizationRequest != null
+        }
+        assertEquals(AuthenticationMethod.AUTHORIZED, authorizationSession.authenticationMethod)
+        assertEquals(scenario.credentialConfigurationId, authorizationSession.credentialConfigurationId)
+        assertEquals(
+            listOf(scenario.credentialConfigurationId),
+            authorizationSession.authorizationRequest?.get("scope"),
+        )
+    }
+
+    @Test
+    fun parAuthorizationRequestPreservesRedirectUriQueryThroughExternalLogin() = testApplication {
+        val scenario = Issuer2CredentialScenarios.openBadgeCredential
+        val clientAttestation = createIssuer2ClientAttestationTestMaterial()
+        installIssuer2WithConfigFiles { config ->
+            config.copy(clientAuthenticationConfig = clientAttestation.clientAuthenticationConfig)
+        }
+        val client = apiClient()
+
+        val clientId = "issuer2-wallet-test"
+        val walletRedirectUri = "https://wallet.example/callback?dummy1=foo&dummy2=ipsum"
+        val authorizationServerIssuer = Json.parseToJsonElement(
+            client.get("/.well-known/oauth-authorization-server/openid4vci").bodyAsText()
+        ).jsonObject["issuer"]?.jsonPrimitive?.content
+        assertNotNull(authorizationServerIssuer)
+        val attestationHeaders = clientAttestation.attestationAssembler.buildAttestationHeaders(
+            instanceKey = JWKKey.generate(KeyType.secp256r1),
+            clientId = clientId,
+            audience = authorizationServerIssuer,
+        )
+        val parResponse = client.post("/openid4vci/par") {
+            header(ClientAttestationHeaders.CLIENT_ATTESTATION, attestationHeaders.attestationJwt)
+            header(ClientAttestationHeaders.CLIENT_ATTESTATION_POP, attestationHeaders.popJwt)
+            setBody(
+                FormDataContent(
+                    Parameters.build {
+                        append("response_type", "code")
+                        append("client_id", clientId)
+                        append("redirect_uri", walletRedirectUri)
+                        append("state", "par-state")
+                        append("scope", scenario.credentialConfigurationId)
+                    }
+                )
+            )
+        }
+
+        assertEquals(HttpStatusCode.Created, parResponse.status, parResponse.bodyAsText())
+        val requestUri = Json.parseToJsonElement(parResponse.bodyAsText())
+            .jsonObject["request_uri"]
+            ?.jsonPrimitive
+            ?.content
+        assertNotNull(requestUri)
+
+        val authorizationResponse = client.get("/openid4vci/authorize") {
+            parameter("client_id", clientId)
+            parameter("request_uri", requestUri)
+        }
+
+        assertEquals(HttpStatusCode.Found, authorizationResponse.status, authorizationResponse.bodyAsText())
+        val externalLoginRedirect = assertNotNull(authorizationResponse.headers[HttpHeaders.Location])
+        val authorizationRequestParameters = externalLoginRedirect
+            .substringAfter("/external_login/")
+            .decodeExternalLoginAuthorizationParameters()
+        assertEquals(listOf(walletRedirectUri), authorizationRequestParameters["redirect_uri"])
+    }
+
+    @Test
+    fun malformedAuthorizationRequestReturnsOAuthErrorResponse() = testApplication {
+        installIssuer2WithConfigFiles()
+        val client = apiClient()
+        val requestId = "malformed-authorization-request"
+
+        val authorizationResponse = client.get("/openid4vci/authorize") {
+            header(HttpHeaders.XRequestId, requestId)
+            parameter("client_id", "issuer2-wallet-test")
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, authorizationResponse.status)
+        assertEquals(requestId, authorizationResponse.headers[HttpHeaders.XRequestId])
+        assertTrue(authorizationResponse.bodyAsText().contains("Missing response_type"))
+    }
+
+    @Test
+    fun unresolvedAuthorizationRequestRedirectsOAuthErrorToWallet() = testApplication {
+        installIssuer2WithConfigFiles()
+        val client = apiClient()
+
+        val authorizationResponse = client.get("/openid4vci/authorize") {
+            parameter("response_type", "code")
+            parameter("client_id", "issuer2-wallet-test")
+            parameter("redirect_uri", "https://wallet.example/callback")
+            parameter("state", "unknown-scope-state")
+            parameter("scope", "unknown_credential_configuration")
+        }
+
+        assertEquals(HttpStatusCode.Found, authorizationResponse.status, authorizationResponse.bodyAsText())
+        val redirect = Url(assertNotNull(authorizationResponse.headers[HttpHeaders.Location]))
+        assertEquals("invalid_request", redirect.parameters["error"])
+        assertEquals("unknown-scope-state", redirect.parameters["state"])
+        assertEquals("$KTOR_TEST_APPLICATION_BASE_URL/openid4vci", redirect.parameters["iss"])
+        assertTrue(
+            assertNotNull(redirect.parameters["error_description"]).contains("No credential configuration"),
+        )
+    }
+
+    private companion object {
+        const val WALLET_REDIRECT_URI = "http://127.0.0.1:65535/callback"
+        const val EUDI_WALLET_CLIENT_ID = "eudiw-abca"
+        const val AVAILABLE_WALLET_ATTESTER_URL = "https://wallet-provider.eudiw.dev/wallet-instance-attestation/jwk"
+
+        fun eudiAttestationAssembler(): ClientAttestationAssembler =
+            ClientAttestationAssembler(
+                GenericHttpWalletAttestationProvider(
+                    attesterUrl = AVAILABLE_WALLET_ATTESTER_URL,
+                    requestBodyTemplate = buildJsonObject {
+                        put("jwk", PUBLIC_JWK_PLACEHOLDER)
+                    },
+                ),
+            )
+    }
+}

@@ -1,5 +1,3 @@
-@file:OptIn(ExperimentalTime::class)
-
 package id.walt.entrawallet.core.utils
 
 import id.walt.crypto.utils.JwsUtils.decodeJws
@@ -12,12 +10,9 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
 import kotlinx.serialization.json.*
-import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
-import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
-@OptIn(ExperimentalUuidApi::class)
 @Serializable
 data class WalletCredential(
     @Serializable(with = UuidSerializer::class) // required to serialize Uuid, until kotlinx.serialization uses Kotlin 2.1.0
@@ -39,7 +34,7 @@ data class WalletCredential(
     companion object {
         fun parseDocument(document: String, id: String, format: CredentialFormat) =
             runCatching {
-                when(format) {
+                when (format) {
                     CredentialFormat.ldp_vc -> Json.parseToJsonElement(document).jsonObject
                     CredentialFormat.jwt_vc, CredentialFormat.sd_jwt_vc, CredentialFormat.jwt_vc_json,
                     CredentialFormat.jwt_vc_json_ld -> document.decodeJws().payload

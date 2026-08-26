@@ -1,4 +1,3 @@
-@file:OptIn(ExperimentalUuidApi::class)
 
 package id.walt.webwallet.service.report
 
@@ -10,10 +9,8 @@ import id.walt.webwallet.service.events.EventService
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.serialization.json.Json
-
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
 class ReportServiceTest {

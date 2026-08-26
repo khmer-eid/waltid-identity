@@ -7,35 +7,40 @@ group = "id.walt.crypto"
 
 dependencies {
     testImplementation(kotlin("test"))
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
+    implementation(identityLibs.kotlinx.coroutines.test)
 
     // walt.id
     api(project(":waltid-libraries:crypto:waltid-crypto"))
 
     // JSON
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
+    implementation(identityLibs.kotlinx.serialization.json)
 
     // Coroutines
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
+    implementation(identityLibs.kotlinx.coroutines.core)
 
     // AWS
-    implementation("aws.sdk.kotlin:kms-jvm:1.5.103")
+    implementation(identityLibs.aws.kms)
 
     // JOSE
-    implementation("com.nimbusds:nimbus-jose-jwt:10.6")
+    implementation(identityLibs.nimbus.jose.jwt)
 
     // Hashing with SHA-2
-    implementation(project.dependencies.platform("org.kotlincrypto.hash:bom:0.6.1"))
-    implementation("org.kotlincrypto.hash:sha2")
+    implementation(identityLibs.kotlincrypto.hash.sha2)
+
+    // Logging
+    implementation(identityLibs.oshai.kotlinlogging)
 }
 
 tasks.withType<Test> {
-    enabled = false
+    // AWS integration tests require credentials; enable with RUN_AWS_TESTS=true
+    // Unit tests for config/model classes run regardless
+    enabled = System.getenv("RUN_AWS_TESTS")?.toBoolean() ?: false
+    useJUnitPlatform()
 }
 
 mavenPublishing {
     pom {
-        name.set("Walt.id Crypto AWS")
-        description.set("Walt.id Crypto AWS Integration")
+        name.set("walt.id Crypto AWS")
+        description.set("walt.id Crypto AWS Integration")
     }
 }

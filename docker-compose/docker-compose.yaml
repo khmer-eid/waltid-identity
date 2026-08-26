@@ -3,7 +3,7 @@ services:
     image: ${IMAGE_PREFIX}waltid/wallet-api:${VERSION_TAG:-latest}
     profiles:
       - services
-      - identity
+      - identity-old
       - all
     pull_policy: missing
     depends_on:
@@ -15,7 +15,6 @@ services:
       - .env
     extra_hosts:
       - "$SERVICE_HOST:host-gateway"
-      - "waltid.enterprise.localhost:host-gateway"
     volumes:
       - ./wallet-api/config:/waltid-wallet-api/config
       - ./wallet-api/data:/waltid-wallet-api/data
@@ -24,18 +23,20 @@ services:
     image: ${IMAGE_PREFIX}waltid/issuer-api:${VERSION_TAG:-latest}
     profiles:
       - services
-      - identity
+      - identity-old
       - all
     pull_policy: missing
     depends_on:
       - caddy
     env_file:
       - .env
+    extra_hosts:
+      - "$SERVICE_HOST:host-gateway"
     volumes:
       - ./issuer-api/config:/waltid-issuer-api/config
 
-  verifier-api:
-    image: ${IMAGE_PREFIX}waltid/verifier-api:${VERSION_TAG:-latest}
+  issuer-api2:
+    image: ${IMAGE_PREFIX}waltid/issuer-api2:${VERSION_TAG:-latest}
     profiles:
       - services
       - identity
@@ -45,6 +46,24 @@ services:
       - caddy
     env_file:
       - .env
+    extra_hosts:
+      - "$SERVICE_HOST:host-gateway"
+    volumes:
+      - ./issuer-api2/config:/waltid-issuer-api2/config
+
+  verifier-api:
+    image: ${IMAGE_PREFIX}waltid/verifier-api:${VERSION_TAG:-latest}
+    profiles:
+      - services
+      - identity-old
+      - all
+    pull_policy: missing
+    depends_on:
+      - caddy
+    env_file:
+      - .env
+    extra_hosts:
+      - "$SERVICE_HOST:host-gateway"
     volumes:
       - ./verifier-api/config:/waltid-verifier-api/config
     environment:
@@ -61,23 +80,48 @@ services:
       - caddy
     env_file:
       - .env
+    extra_hosts:
+      - "$SERVICE_HOST:host-gateway"
     volumes:
       - ./verifier-api2/config:/waltid-verifier-api2/config
+
+  wallet-api2:
+    image: ${IMAGE_PREFIX}waltid/wallet-api2:${VERSION_TAG:-latest}
+    profiles:
+      - services
+      - identity
+      - all
+    pull_policy: missing
+    depends_on:
+      postgres:
+        condition: service_healthy
+      caddy:
+        condition: service_started
+    env_file:
+      - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./wallet-api2/config:/waltid-wallet-api2/config
 
 
   waltid-demo-wallet:
     image: ${IMAGE_PREFIX}waltid/waltid-demo-wallet:${VERSION_TAG:-latest}
     profiles:
       - apps
-      - identity
+      - identity-old
       - all
     pull_policy: missing
     build:
       context: ../
       dockerfile: waltid-applications/waltid-web-wallet/apps/waltid-demo-wallet/Dockerfile
     depends_on:
-      - wallet-api
-      - caddy
+      # wallet-api is not part of the apps profile, so it may not be enabled
+      wallet-api:
+        condition: service_started
+        required: false
+      caddy:
+        condition: service_started
     environment:
       NUXT_PUBLIC_ISSUER_CALLBACK_URL: "http://$SERVICE_HOST:$DEMO_WALLET_FRONTEND_PORT"
       NUXT_PUBLIC_DEV_WALLET_URL: "http://$SERVICE_HOST:$DEV_WALLET_FRONTEND_PORT"
@@ -87,15 +131,19 @@ services:
     image: ${IMAGE_PREFIX}waltid/waltid-dev-wallet:${VERSION_TAG:-latest}
     profiles:
       - apps
-      - identity
+      - identity-old
       - all
     pull_policy: missing
     build:
       context: ../
       dockerfile: waltid-applications/waltid-web-wallet/apps/waltid-dev-wallet/Dockerfile
     depends_on:
-      - wallet-api
-      - caddy
+      # wallet-api is not part of the apps profile, so it may not be enabled
+      wallet-api:
+        condition: service_started
+        required: false
+      caddy:
+        condition: service_started
     environment:
       NUXT_PUBLIC_ISSUER_CALLBACK_URL: "http://$SERVICE_HOST:$DEV_WALLET_FRONTEND_PORT"
       NUXT_PUBLIC_DEMO_WALLET_URL: "http://$SERVICE_HOST:$DEMO_WALLET_FRONTEND_PORT"
@@ -105,7 +153,7 @@ services:
     image: ${IMAGE_PREFIX}waltid/portal:${VERSION_TAG:-latest}
     profiles:
       - apps
-      - identity
+      - identity-old
       - all
     pull_policy: missing
     build:
@@ -117,15 +165,45 @@ services:
       NEXT_PUBLIC_VC_REPO: "http://$SERVICE_HOST:$VC_REPO_PORT"
       NEXT_PUBLIC_ISSUER: "http://$SERVICE_HOST:$ISSUER_API_PORT"
       NEXT_PUBLIC_VERIFIER: "http://$SERVICE_HOST:$VERIFIER_API_PORT"
+      NEXT_PUBLIC_VERIFIER2: "http://$SERVICE_HOST:$VERIFIER_API2_PORT"
       NEXT_PUBLIC_WALLET: "http://$SERVICE_HOST:$DEMO_WALLET_FRONTEND_PORT"
       PORT: $WEB_PORTAL_PORT
+
+  web-portal2:
+    image: ${IMAGE_PREFIX}waltid/portal2:${VERSION_TAG:-latest}
+    profiles:
+      - apps
+      - identity
+      - all
+    pull_policy: missing
+    build:
+      context: ../
+      dockerfile: waltid-applications/waltid-web-portal2/Dockerfile
+    depends_on:
+      # The api2 services are not part of the apps profile, so they may not be enabled
+      issuer-api2:
+        condition: service_started
+        required: false
+      verifier-api2:
+        condition: service_started
+        required: false
+      caddy:
+        condition: service_started
+    environment:
+      NUXT_PUBLIC_ISSUER_BASE: "http://$PUBLIC_SERVICE_HOST:$ISSUER_API2_PORT"
+      NUXT_PUBLIC_VERIFIER_BASE: "http://$PUBLIC_SERVICE_HOST:$VERIFIER_API2_PORT"
+      NUXT_PUBLIC_WALLET_URL: "http://$PUBLIC_SERVICE_HOST:$DEMO_WALLET_FRONTEND_PORT"
+      NUXT_PUBLIC_VERIFIER_KEY_JWK: "$WEB_PORTAL2_VERIFIER_KEY_JWK"
+      NUXT_PUBLIC_VERIFIER_X5C: "$WEB_PORTAL2_VERIFIER_X5C"
+      NUXT_PUBLIC_VERIFIER_CLIENT_ID: "$WEB_PORTAL2_VERIFIER_CLIENT_ID"
+      PORT: $WEB_PORTAL2_PORT
 
   vc-repo:
     platform: linux/amd64
     image: ${IMAGE_PREFIX}waltid/vc-repository:${VERSION_VC_REPO:-latest}
     profiles:
       - services
-      - identity
+      - identity-old
       - all
     pull_policy: missing
     build:
@@ -241,6 +319,11 @@ services:
         protocol: tcp
         mode: host
 
+      - target: "$ISSUER_API2_PORT"
+        published: $ISSUER_API2_PORT # issuer-api2
+        protocol: tcp
+        mode: host
+
       - target: "$VERIFIER_API_PORT"
         published: $VERIFIER_API_PORT # verifier-api
         protocol: tcp
@@ -248,6 +331,11 @@ services:
 
       - target: "$VERIFIER_API2_PORT"
         published: $VERIFIER_API2_PORT # verifier-api2
+        protocol: tcp
+        mode: host
+
+      - target: "$WALLET_API2_PORT"
+        published: $WALLET_API2_PORT # wallet-api2
         protocol: tcp
         mode: host
 
@@ -263,6 +351,11 @@ services:
 
       - target: "$WEB_PORTAL_PORT"
         published: $WEB_PORTAL_PORT # web-portal
+        protocol: tcp
+        mode: host
+
+      - target: "$WEB_PORTAL2_PORT"
+        published: $WEB_PORTAL2_PORT # web-portal2
         protocol: tcp
         mode: host
 

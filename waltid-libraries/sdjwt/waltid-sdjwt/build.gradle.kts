@@ -7,7 +7,7 @@ plugins {
 group = "id.walt.sdjwt"
 
 kotlin {
-    js(IR) {
+    js {
         compilerOptions {
             target.set("es2015")
         }
@@ -15,29 +15,33 @@ kotlin {
 
     sourceSets {
         commonMain.dependencies {
-            implementation("dev.whyoleg.cryptography:cryptography-random:0.5.0")
-            implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
-            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
-            implementation("org.jetbrains.kotlinx:kotlinx-datetime:0.7.1")
-            implementation("com.soywiz.korlibs.krypto:krypto:4.0.10")
+            implementation(identityLibs.whyoleg.cryptography.random)
+            implementation(identityLibs.kotlinx.serialization.json)
+            implementation(identityLibs.kotlinx.coroutines.core)
+            implementation(identityLibs.kotlinx.datetime)
+            implementation(identityLibs.kotlincrypto.hash.sha2)
+            implementation(identityLibs.kotlincrypto.random)
+            implementation(identityLibs.korlibs.encoding)
             implementation(identityLibs.oshai.kotlinlogging)
+            api(project(":waltid-libraries:crypto:waltid-crypto"))
+            api(project(":waltid-libraries:crypto:waltid-crypto2"))
+            api(project(":waltid-libraries:crypto:waltid-jose"))
         }
         commonTest.dependencies {
             implementation(kotlin("test"))
+            implementation(identityLibs.kotlinx.coroutines.test)
         }
         jvmMain.dependencies {
-            implementation("com.nimbusds:nimbus-jose-jwt:10.6")
-            api(project(":waltid-libraries:crypto:waltid-crypto"))
+            implementation(identityLibs.nimbus.jose.jwt)
         }
         jvmTest.dependencies {
-            implementation("org.slf4j:slf4j-simple:2.0.17")
+            implementation(identityLibs.slf4j.simple)
         }
         jsMain.dependencies {
             implementation(npm("jose", "5.10.0"))
         }
     }
 
-    applyDefaultHierarchyTemplate()
 }
 
 tasks.named("jsBrowserTest") {

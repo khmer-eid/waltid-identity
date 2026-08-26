@@ -1,11 +1,17 @@
+@file:OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+
 package id.walt.openid4vp.clientidprefix.prefixes
 
-import id.walt.crypto.utils.JwsUtils.decodeJws
+import id.walt.crypto.keys.Key
+import id.walt.crypto.keys.PublicKeyIds
+import id.walt.crypto2.jose.CompactJws
+import id.walt.crypto2.jose.JwsAlgorithm
+import id.walt.crypto2.keys.Key as Crypto2Key
 import id.walt.did.dids.DidService
 import id.walt.openid4vp.clientidprefix.ClientIdError
 import id.walt.openid4vp.clientidprefix.ClientValidationResult
 import id.walt.openid4vp.clientidprefix.RequestContext
-import id.walt.verifier.openid.models.authorization.ClientMetadata
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.jsonPrimitive
 
@@ -31,27 +37,93 @@ data class DecentralizedIdentifier(val did: String, override val rawValue: Strin
         val jws = context.requestObjectJws
             ?: return ClientValidationResult.Failure(ClientIdError.MissingRequestObject)
 
-        return runCatching {
-            val kid = jws.decodeJws().header["kid"]?.jsonPrimitive?.content
+        return try {
+            val decoded = CompactJws.decodeUnverified(jws)
+            val kid = decoded.protectedHeader["kid"]?.jsonPrimitive?.content
                 ?: throw IllegalStateException("Missing 'kid' header in JWS for key selection.")
 
-            // 1. Resolve all keys from the DID document.
-            val keys = DidService.resolveToKeys(clientId.did).getOrThrow()
+            if (decoded.algorithm == JwsAlgorithm.ES256K) {
+                val keys = DidService.resolveToKeys(clientId.did).getOrThrow()
+                val verificationKey = selectLegacyVerificationKey(clientId.did, kid, keys)
+                verificationKey.verifyJws(jws).getOrThrow()
+            } else {
+                val keys = DidService.resolveToCrypto2Keys(clientId.did).getOrThrow()
+                val verificationKey = selectCrypto2VerificationKey(clientId.did, kid, keys)
+                ClientIdCrypto2.verify(jws, verificationKey)
+            }
 
-            // 2. Find the specific key used for signing.
-            val verificationKey = keys.find { it.getKeyId() == kid }
-                ?: throw IllegalArgumentException("Key ID '$kid' from JWS not found in DID document.")
-
-            // 3. Verify the JWS signature with that key.
-            verificationKey.verifyJws(jws).getOrThrow()
-
-            val metadataJson = context.clientMetadataJson
+            val metadataJson = context.clientMetadata
                 ?: throw IllegalStateException("client_metadata parameter is required.")
-
-            ClientMetadata.fromJson(metadataJson).getOrThrow()
-        }.fold(
-            onSuccess = { ClientValidationResult.Success(it) },
-            onFailure = { ClientValidationResult.Failure(ClientIdError.DidResolutionFailed(it.message!!)) }
-        )
+            ClientValidationResult.Success(metadataJson)
+        } catch (cause: CancellationException) {
+            throw cause
+        } catch (cause: Exception) {
+            ClientValidationResult.Failure(ClientIdError.DidResolutionFailed(cause.message ?: "DID verification failed"))
+        }
     }
+
+    /**
+     * Key selection for OpenID4VP decentralized_identifier:
+     * 1. JAR kid is a DID URL for this DID — match fragment to public key id / thumbprint
+     * 2. did:key method id `did:key:<multibase>#<multibase>` may not equal the KMS key id
+     *    (e.g. Azure vault URL); accept the single key only for that method fragment
+     * 3. Otherwise match RFC 7638 thumbprint / public key id
+     * 4. Unknown fragments (e.g. `did:…#missing`) must not authenticate
+     */
+    private suspend fun selectLegacyVerificationKey(did: String, kid: String, keys: Set<Key>): Key {
+        if (kid == did || kid.startsWith("$did#")) {
+            val fragment = kid.removePrefix("$did#").takeIf { kid != did }.orEmpty()
+            if (fragment.isNotEmpty()) {
+                keys.find { key ->
+                    val publicId = PublicKeyIds.run { key.publicKeyId() }
+                    val thumbprint = key.getThumbprint()
+                    fragment == publicId || fragment == thumbprint || fragment == key.getKeyId()
+                }?.let { return it }
+                if (isDidKeyMethodFragment(did, fragment)) {
+                    keys.singleOrNull()?.let { return it }
+                }
+            } else {
+                keys.singleOrNull()?.let { return it }
+            }
+        }
+
+        keys.find { key ->
+            val publicId = PublicKeyIds.run { key.publicKeyId() }
+            val thumbprint = key.getThumbprint()
+            publicId == kid || thumbprint == kid ||
+                kid.endsWith("#$publicId") || kid.endsWith("#$thumbprint") ||
+                kid.endsWith("/$publicId") || kid.endsWith("/$thumbprint")
+        }?.let { return it }
+
+        throw IllegalArgumentException("Key ID '$kid' from JWS not found in DID document.")
+    }
+
+    private fun selectCrypto2VerificationKey(did: String, kid: String, keys: Set<Crypto2Key>): Crypto2Key {
+        if (kid == did || kid.startsWith("$did#")) {
+            val fragment = kid.removePrefix("$did#").takeIf { kid != did }.orEmpty()
+            if (fragment.isNotEmpty()) {
+                keys.find { key ->
+                    val keyId = key.id.value
+                    !PublicKeyIds.isHttpKeyId(keyId) && (fragment == keyId)
+                }?.let { return it }
+                if (isDidKeyMethodFragment(did, fragment)) {
+                    keys.singleOrNull()?.let { return it }
+                }
+            } else {
+                keys.singleOrNull()?.let { return it }
+            }
+        }
+
+        keys.find { key ->
+            val keyId = key.id.value
+            !PublicKeyIds.isHttpKeyId(keyId) && (
+                keyId == kid || kid.endsWith("#$keyId") || kid.endsWith("/$keyId")
+                )
+        }?.let { return it }
+
+        throw IllegalArgumentException("Key ID '$kid' from JWS not found in DID document.")
+    }
+
+    private fun isDidKeyMethodFragment(did: String, fragment: String): Boolean =
+        did.startsWith("did:key:") && fragment == did.removePrefix("did:key:")
 }

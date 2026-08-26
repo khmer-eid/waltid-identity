@@ -1,9 +1,9 @@
-@file:OptIn(ExperimentalTime::class, ExperimentalSerializationApi::class)
+@file:OptIn(ExperimentalSerializationApi::class)
 
 package id.walt.mdoc.objects.elements
 
 import id.walt.mdoc.credsdata.CredentialManager
-import id.walt.mdoc.encoding.TransformingSerializerTemplate
+import id.walt.mdoc.encoding.MdocTDateInstantSerializer
 import id.walt.mdoc.objects.MdocsCborSerializer
 import kotlinx.datetime.LocalDate
 import kotlinx.serialization.ExperimentalSerializationApi
@@ -15,7 +15,6 @@ import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
 import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.descriptors.mapSerialDescriptor
 import kotlinx.serialization.encoding.*
-import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
 
 /**
@@ -78,7 +77,7 @@ open class DeviceSignedItemListSerializer(private val namespace: String) :
             is Int -> encodeIntElement(descriptor, index, it)
             is Long -> encodeLongElement(descriptor, index, it)
             is LocalDate -> encodeSerializableElement(descriptor, index, LocalDate.serializer(), it)
-            is Instant -> encodeSerializableElement(descriptor, index, InstantStringSerializer, it)
+            is Instant -> encodeSerializableElement(descriptor, index, MdocTDateInstantSerializer, it)
             is Boolean -> encodeBooleanElement(descriptor, index, it)
             is ByteArray -> encodeSerializableElement(descriptor, index, ByteArraySerializer(), it)
             else -> MdocsCborSerializer.encode(namespace, value.key, descriptor, index, this, it)
@@ -94,13 +93,13 @@ open class DeviceSignedItemListSerializer(private val namespace: String) :
         is Int -> Int.serializer()
         is Long -> Long.serializer()
         is LocalDate -> LocalDate.serializer()
-        is Instant -> InstantStringSerializer
+        is Instant -> MdocTDateInstantSerializer
         is Boolean -> Boolean.serializer()
         is ByteArray -> ByteArraySerializer()
         is Any -> MdocsCborSerializer.lookupSerializer(namespace, elementIdentifier)
-            ?: error("serializer not found for $elementIdentifier, with value $elementValue")
+            ?: error("DeviceSignedItemListSerializer: Custom serializer not found for $elementIdentifier, with value $elementValue")
 
-        else -> error("serializer not found for $elementIdentifier, with value $elementValue")
+        else -> error("DeviceSignedItemListSerializer: Standard serializer not found for $elementIdentifier, with value $elementValue")
     }
 
     override fun deserialize(decoder: Decoder): DeviceSignedItemList {
@@ -141,6 +140,7 @@ open class DeviceSignedItemListSerializer(private val namespace: String) :
         // These are the ones that map to different CBOR data types, the rest don't, so if it is not registered, we'll
         // lose type information. No others must be added here, as they could consume data from the underlying bytes
         runCatching { return decodeStringElement(descriptor, index) }
+        runCatching { return decodeSerializableElement(descriptor, index, ByteArraySerializer()) }
         runCatching { return decodeLongElement(descriptor, index) }
         runCatching { return decodeDoubleElement(descriptor, index) }
         runCatching { return decodeBooleanElement(descriptor, index) }
@@ -148,11 +148,3 @@ open class DeviceSignedItemListSerializer(private val namespace: String) :
         throw IllegalArgumentException("Could not decode value at $index")
     }
 }
-
-
-/** De-/serializes Instant */
-internal object InstantStringSerializer : TransformingSerializerTemplate<Instant, String>(
-    parent = String.serializer(),
-    encodeAs = { it.toString() },
-    decodeAs = { Instant.parse(it) }
-)

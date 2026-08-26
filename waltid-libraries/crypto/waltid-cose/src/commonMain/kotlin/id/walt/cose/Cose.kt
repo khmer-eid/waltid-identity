@@ -2,12 +2,14 @@
 
 package id.walt.cose
 
+import id.walt.crypto.keys.KeyType
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.serialization.ExperimentalSerializationApi
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.cbor.ByteString
-import kotlinx.serialization.cbor.CborArray
 import kotlinx.serialization.cbor.CborLabel
+import kotlinx.serialization.cbor.CborObjectAsArray
 import kotlinx.serialization.decodeFromByteArray
 import kotlinx.serialization.encodeToByteArray
 import kotlinx.serialization.json.*
@@ -17,7 +19,7 @@ import kotlin.io.encoding.Base64
 interface CoseMessage
 
 @Serializable
-@CborArray
+@CborObjectAsArray
 data class CoseSign1(
     @ByteString val protected: ByteArray,
     val unprotected: CoseHeaders,
@@ -215,7 +217,7 @@ data class CoseSign1(
 }
 
 @Serializable
-@CborArray
+@CborObjectAsArray
 data class CoseMac0(
     @ByteString val protected: ByteArray,
     val unprotected: CoseHeaders,
@@ -320,7 +322,7 @@ data class CoseKey(
     @CborLabel(2) @ByteString val kid: ByteArray? = null,
     @CborLabel(3) val alg: Int? = null,
     @CborLabel(4) val key_ops: List<Int>? = null,
-    @CborLabel(5) @ByteString val `Base IV`: ByteArray? = null,
+    @CborLabel(5) @SerialName("Base IV") @ByteString val baseIv: ByteArray? = null,
     /** for OKP and EC2 */
     @CborLabel(-1) val crv: Int? = null,
     /** for OKP and EC2 */
@@ -411,6 +413,8 @@ data class CoseKey(
                     Cose.EllipticCurves.P_521 -> "P-521"
                     Cose.EllipticCurves.Ed25519 -> "Ed25519"
                     Cose.EllipticCurves.Ed448 -> "Ed448"
+                    Cose.EllipticCurves.X25519 -> "X25519"
+                    Cose.EllipticCurves.X448 -> "X448"
                     Cose.EllipticCurves.secp256k1 -> "secp256k1"
                     else -> null // Ignore unsupported curves
                 }
@@ -440,7 +444,7 @@ data class CoseKey(
         if (crv != other.crv) return false
         if (!kid.contentEquals(other.kid)) return false
         if (key_ops != other.key_ops) return false
-        if (!`Base IV`.contentEquals(other.`Base IV`)) return false
+        if (!baseIv.contentEquals(other.baseIv)) return false
         if (!x.contentEquals(other.x)) return false
         if (!y.contentEquals(other.y)) return false
         if (!d.contentEquals(other.d)) return false
@@ -454,7 +458,7 @@ data class CoseKey(
         result = 31 * result + (crv ?: 0)
         result = 31 * result + (kid?.contentHashCode() ?: 0)
         result = 31 * result + (key_ops?.hashCode() ?: 0)
-        result = 31 * result + (`Base IV`?.contentHashCode() ?: 0)
+        result = 31 * result + (baseIv?.contentHashCode() ?: 0)
         result = 31 * result + (x?.contentHashCode() ?: 0)
         result = 31 * result + (y?.contentHashCode() ?: 0)
         result = 31 * result + (d?.contentHashCode() ?: 0)
@@ -464,7 +468,7 @@ data class CoseKey(
 
 /** Represents a COSE Key Set. Aligned with RFC 8152, Section 7. */
 @Serializable
-@CborArray
+@CborObjectAsArray
 data class CoseKeySet(val keys: List<CoseKey>)
 
 
@@ -501,6 +505,9 @@ object Cose {
         /** ECDSA w/ SHA-256 */
         const val ES256 = -7
 
+        /** Fully specified ECDSA using P-256 and SHA-256 for algorithm negotiation. */
+        const val ESP256 = -9
+
         /** ECDSA w/ SHA-384 */
         const val ES384 = -35
 
@@ -531,10 +538,13 @@ object Cose {
         // HMAC:
         /** HMAC w/ SHA-256 truncated to 64 bits */
         const val HMAC_256_64 = 4
+
         /** HMAC w/ SHA-256 */
         const val HMAC_256 = 5
+
         /** HMAC w/ SHA-384 */
         const val HMAC_384 = 6
+
         /** HMAC w/ SHA-512 */
         const val HMAC_512 = 7
     }
@@ -592,6 +602,9 @@ object Cose {
         /** Elliptic Curve Keys w/ x- and y-coordinate pair */
         const val EC2 = 2
 
+        /** RSA key */
+        const val RSA = 3
+
         /** Symmetric Keys */
         const val SYMMETRIC = 4
     }
@@ -607,8 +620,11 @@ object Cose {
         /** NIST P-521 also known as secp521r1 */
         const val P_521 = 3
 
-        // X25519: 4 // X25519 for use w/ ECDH only
-        // X448: 5 // X448 for use w/ ECDH only
+        /** X25519 for use w/ XDH only */
+        const val X25519 = 4
+
+        /** X448 for use w/ XDH only */
+        const val X448 = 5
 
         /** Ed25519 for use w/ EdDSA only */
         const val Ed25519 = 6
@@ -618,7 +634,16 @@ object Cose {
 
         /** SECG secp256k1 curve */
         const val secp256k1 = 8
+
+        @Deprecated("Use EncodedKey.Jwk.toCoseKey() with a crypto2 JWK.")
+        fun ellipticCurveForKeyType(keyType: KeyType) = when (keyType) {
+            KeyType.secp256r1 -> P_256
+            KeyType.secp384r1 -> P_384
+            KeyType.secp521r1 -> P_521
+            KeyType.secp256k1 -> secp256k1
+            KeyType.Ed25519 -> Ed25519
+            else -> throw IllegalArgumentException("Unsupported/unknown key type for COSE elliptic curve conversion: $keyType")
+        }
     }
 
 }
-

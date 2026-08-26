@@ -1,10 +1,6 @@
-@file:OptIn(ExperimentalTime::class)
-
 package id.walt.x509.iso
 
 import id.walt.crypto.keys.Key
-import id.walt.crypto.keys.KeyGenerationRequest
-import id.walt.crypto.keys.KeyManager
 import id.walt.crypto.keys.KeyType
 import id.walt.x509.X509ValidityPeriod
 import id.walt.x509.iso.documentsigner.builder.DocumentSignerCertificateBuilder
@@ -19,7 +15,7 @@ import id.walt.x509.iso.iaca.parser.IACACertificateParser
 import id.walt.x509.iso.iaca.validate.IACAValidator
 import kotlin.time.Clock
 import kotlin.time.Duration.Companion.days
-import kotlin.time.ExperimentalTime
+
 
 object IsoSharedTestHarnessValidResources {
 
@@ -32,21 +28,9 @@ object IsoSharedTestHarnessValidResources {
 
                 else -> {
                     _iacaKeyMap = listOf(
-                        KeyManager.createKey(
-                            generationRequest = KeyGenerationRequest(
-                                keyType = KeyType.secp256r1,
-                            )
-                        ),
-                        KeyManager.createKey(
-                            generationRequest = KeyGenerationRequest(
-                                keyType = KeyType.secp384r1,
-                            )
-                        ),
-                        KeyManager.createKey(
-                            generationRequest = KeyGenerationRequest(
-                                keyType = KeyType.secp521r1,
-                            )
-                        ),
+                        createIsoTestKey(KeyType.secp256r1),
+                        createIsoTestKey(KeyType.secp384r1),
+                        createIsoTestKey(KeyType.secp521r1),
                     ).associateBy {
                         it.keyType
                     }
@@ -91,21 +75,9 @@ object IsoSharedTestHarnessValidResources {
 
                 else -> {
                     _dsKeyMap = listOf(
-                        KeyManager.createKey(
-                            generationRequest = KeyGenerationRequest(
-                                keyType = KeyType.secp256r1,
-                            )
-                        ),
-                        KeyManager.createKey(
-                            generationRequest = KeyGenerationRequest(
-                                keyType = KeyType.secp384r1,
-                            )
-                        ),
-                        KeyManager.createKey(
-                            generationRequest = KeyGenerationRequest(
-                                keyType = KeyType.secp521r1,
-                            )
-                        ),
+                        createIsoTestKey(KeyType.secp256r1),
+                        createIsoTestKey(KeyType.secp384r1),
+                        createIsoTestKey(KeyType.secp521r1),
                     ).associateBy {
                         it.keyType
                     }

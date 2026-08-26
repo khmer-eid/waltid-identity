@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>walt.id</string>
+	<!--
+	  Read at runtime by IdentityDocumentNamespace and asserted by CI. It lives here rather than in an
+	  INFOPLIST_KEY_ build setting because only the Info.plist processor expands AppIdentifierPrefix;
+	  as a build setting it silently resolves to the bare suffix.
+	-->
+	<key>WALTKeychainAccessGroup</key>
+	<string>$(AppIdentifierPrefix)id.walt.wallet.native.shared</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Scan credential offer and presentation request QR codes.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Use Face ID to unlock the demo wallet or authorize wallet signing.</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>id.walt.walletdemo</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>openid</string>
+				<string>openid-credential-offer</string>
+				<string>openid4vp</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

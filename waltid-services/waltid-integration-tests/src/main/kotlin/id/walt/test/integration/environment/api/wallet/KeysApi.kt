@@ -1,4 +1,3 @@
-@file:OptIn(ExperimentalUuidApi::class)
 
 package id.walt.test.integration.environment.api.wallet
 
@@ -18,7 +17,6 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
-import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
 class KeysApi(private val e2e: E2ETest, private val client: HttpClient) {
@@ -98,6 +96,17 @@ class KeysApi(private val e2e: E2ETest, private val client: HttpClient) {
 
     suspend fun importKey(wallet: Uuid, payload: String): String =
         importKeyRaw(wallet, payload).let {
+            it.expectSuccess()
+            it.body<String>()
+        }
+
+    suspend fun signRaw(walletId: Uuid, keyId: String, message: JsonElement) =
+        client.post("/wallet-api/wallet/$walletId/keys/$keyId/sign") {
+            setBody(message)
+        }
+
+    suspend fun sign(walletId: Uuid, keyId: String, message: JsonElement): String =
+        signRaw(walletId, keyId, message).let {
             it.expectSuccess()
             it.body<String>()
         }

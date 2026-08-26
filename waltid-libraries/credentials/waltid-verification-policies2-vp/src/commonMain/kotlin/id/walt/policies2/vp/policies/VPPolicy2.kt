@@ -14,6 +14,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive
 import kotlin.time.Duration
 import kotlin.time.measureTimedValue
+import kotlinx.coroutines.CancellationException
 
 @OptIn(ExperimentalSerializationApi::class)
 @JsonClassDiscriminator("policy")
@@ -32,12 +33,12 @@ sealed class VPPolicy2() {
     data class PolicyRunError(
         val error: String,
         val message: String?,
-        val cause: PolicyRunError?
+        val cause: PolicyRunError? = null
     ) {
         constructor(ex: Throwable) : this(
             error = ex::class.simpleName ?: ex::class.portableSimpleName,
             message = ex.message,
-            cause = ex.cause?.let { PolicyRunError(ex.cause!!) }
+            cause = ex.cause?.let { PolicyRunError(it) }
         )
     }
 
@@ -47,11 +48,11 @@ sealed class VPPolicy2() {
         val policyExecuted: VPPolicy2,
 
         val success: Boolean,
-        val results: Map<String, JsonElement>,
+        var results: Map<String, JsonElement>,
         val errors: List<PolicyRunError>,
 
         @SerialName("execution_time")
-        val executionTime: Duration
+        val executionTime: Duration,
     )
 
     internal suspend fun runPolicy(
@@ -60,8 +61,12 @@ sealed class VPPolicy2() {
         val policyContext = VPPolicyRunContext()
 
         val timedRunResult = measureTimedValue {
-            runCatching {
+            try {
                 block.invoke(policyContext)
+            } catch (cause: CancellationException) {
+                throw cause
+            } catch (cause: Throwable) {
+                Result.failure(cause)
             }
         }
         val runResult = timedRunResult.value
@@ -73,7 +78,10 @@ sealed class VPPolicy2() {
         return PolicyRunResult(
             policyExecuted = this,
             success = runResult.isSuccess && policyContext.errors.isEmpty(),
-            results = policyContext.results.mapValues { v -> runCatching { v.value.toJsonElement() }.recoverCatching { ex -> JsonPrimitive(v.value.toString()) }.getOrElse { JsonPrimitive("?") } },
+            results = policyContext.results.mapValues { v ->
+                runCatching { v.value.toJsonElement() }.recoverCatching { ex -> JsonPrimitive(v.value.toString()) }
+                    .getOrElse { JsonPrimitive("?") }
+            },
             errors = policyContext.errors.map { PolicyRunError(it) },
             executionTime = timedRunResult.duration
         )

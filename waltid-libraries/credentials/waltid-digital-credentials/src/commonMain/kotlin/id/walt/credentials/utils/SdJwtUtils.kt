@@ -2,9 +2,12 @@ package id.walt.credentials.utils
 
 import id.walt.credentials.signatures.sdjwt.SdJwtSelectiveDisclosure
 import id.walt.crypto.utils.Base64Utils.base64UrlDecode
+import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.serialization.json.*
 
 object SdJwtUtils {
+
+    private val log = KotlinLogging.logger { }
 
     /**
      * Finds all JsonArray attributes named "_sd" recursively within this JsonObject.
@@ -34,6 +37,44 @@ object SdJwtUtils {
      */
     fun Map<String, Set<String>>.dropDollarPrefix() =
         mapKeys { it.key.removePrefix("$.") }
+
+    /**
+     * Parses a `_sd` array location key produced by [getSdArrays] (e.g. `$.credentialSubject.degree._sd`
+     * or `$.vc._sd`) into a Claim Path prefix as a list of [JsonElement] string components, per
+     * SD-JWT VC §4.6.1.
+     *
+     * The JSONPath root (`$`), the trailing `_sd` segment, and (for W3C credentials) a leading `vc`
+     * wrapper segment are removed so the resulting path is relative to the credential root. For
+     * example:
+     *   - `$._sd`                           -> `[]`                              (root object)
+     *   - `$.credentialSubject.degree._sd`  -> `["credentialSubject","degree"]`
+     *   - `$.vc._sd`                         -> `[]`                              (vc wrapper dropped)
+     *   - `$.vc.credentialSubject._sd`      -> `["credentialSubject"]`
+     */
+    fun parseSdLocationToClaimPath(sdLocation: String): List<JsonElement> =
+        sdLocation
+            .removePrefix("$")
+            .removePrefix(".")
+            .removeSuffix("_sd")
+            .trim('.')
+            .split('.')
+            .filter { it.isNotEmpty() }
+            .dropVcWrapper()
+            .map { JsonPrimitive(it) }
+
+    /**
+     * Drops a leading `vc` segment used by W3C JWT-VCs that embed the credential under a `vc` claim.
+     * Claim Paths are resolved relative to the credential root (the `vc` content), not the JWT payload.
+     */
+    private fun List<String>.dropVcWrapper(): List<String> =
+        if (firstOrNull() == "vc") drop(1) else this
+
+    /** Appends a claim name (object key) component to a Claim Path. */
+    fun List<JsonElement>.appendClaimName(name: String): List<JsonElement> = this + JsonPrimitive(name)
+
+    /** Appends an array index component to a Claim Path. */
+    fun List<JsonElement>.appendArrayIndex(index: Int): List<JsonElement> = this + JsonPrimitive(index)
+
 
     // Recursive helper function
     private fun findSdArraysRecursive(
@@ -100,15 +141,38 @@ object SdJwtUtils {
     fun parseDisclosureString(disclosures: String) =
         if (disclosures.isBlank()) null else
             disclosures.split("~").mapNotNull {
+                log.trace { "Parsing disclosure part: $it" }
                 if (it.isNotBlank()) {
+                    // Per RFC 9901 §4: disclosures are base64url-encoded JSON arrays and never
+                    // contain '.'. A part containing '.' is a KB-JWT (or similar) and must be skipped.
+                    if (it.contains('.')) {
+                        log.trace { "Skipping non-disclosure tilde-part (contains '.'): ${it.take(20)}..." }
+                        return@mapNotNull null
+                    }
                     val jsonArrayString = it.base64UrlDecode().decodeToString()
                     val jsonArray = Json.decodeFromString<JsonArray>(jsonArrayString)
 
+                    // Check the size of the array to determine the type of disclosure
+                    val (name, value) = when (jsonArray.size) {
+                        // Object Property Disclosure: [salt, name, value]
+                        3 -> Pair(jsonArray[1].jsonPrimitive.content, jsonArray[2])
+
+                        // Array Element Disclosure: [salt, value]
+                        // Name is null (or empty) because array elements don't have keys
+                        2 -> Pair(null, jsonArray[1])
+
+                        else -> throw IllegalArgumentException("Invalid disclosure format: size ${jsonArray.size}")
+                    }
+
                     SdJwtSelectiveDisclosure(
                         salt = jsonArray[0].jsonPrimitive.content,
-                        name = jsonArray[1].jsonPrimitive.content,
-                        value = jsonArray[2],
-                        encoded = jsonArrayString
+                        name = name, // Ensure your data class accepts String? here
+                        value = value,
+                        // Preserve the EXACT original base64url wire encoding. The issuer's digest in
+                        // `_sd` is SHA-256 over this exact string; re-serializing [salt,name,value]
+                        // can differ byte-for-byte (number/string formatting, key order) and would
+                        // produce a non-matching digest. See SdJwtSelectiveDisclosure.asEncoded().
+                        encoded = it
                     )
                 } else null
             }

@@ -5,6 +5,7 @@ import id.walt.did.dids.document.DidDocument
 import id.walt.did.dids.registrar.dids.DidWebCreateOptions
 import id.walt.did.dids.registrar.local.web.DidWebRegistrar
 import id.walt.did.dids.resolver.local.DidWebResolver
+import id.walt.webdatafetching.WebDataFetcher
 import io.ktor.client.*
 import io.ktor.client.engine.cio.*
 import io.ktor.http.*
@@ -30,7 +31,7 @@ import kotlin.test.assertEquals
 
 class LocalDidWebConsistencyTest {
 
-    private val localResolver = DidWebResolver(DidWebTestHttpClient.http)
+    private val localResolver = DidWebResolver(WebDataFetcher.wrapping(DidWebTestHttpClient.http, id = "did-web-consistency-test"))
     private val localRegistrar = DidWebRegistrar()
 
     private data class TestEntry(
@@ -82,7 +83,8 @@ class LocalDidWebConsistencyTest {
 
     private fun populateTestData(): List<TestEntry> = runBlocking {
         println("-- Populating test data --")
-        val keyList: List<JWKKey> = KeyType.entries.map { keyType -> JWKKey.generate(keyType).also { println("Created JWKKey for $keyType: $it") } }
+        val keyList: List<JWKKey> =
+            KeyType.entries.map { keyType -> JWKKey.generate(keyType).also { println("Created JWKKey for $keyType: $it") } }
         val domain = "localhost:3021"
         keyList.map {
             val path = it.keyType.toString().lowercase()
@@ -108,7 +110,7 @@ class LocalDidWebConsistencyTest {
 
     private fun ApplicationEngine.Configuration.envConfig() {
         connector {
-            port = 8000
+            port = 8021
         }
         sslConnector(
             keyStore = keyStore,

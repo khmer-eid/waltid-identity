@@ -1,14 +1,11 @@
-@file:OptIn(ExperimentalUuidApi::class)
 
 package id.walt.webwallet.db
 
-import app.softwork.uuid.isValidUuidString
 import org.jetbrains.exposed.v1.core.Column
 import org.jetbrains.exposed.v1.core.ColumnType
 import org.jetbrains.exposed.v1.core.Table
 import org.jetbrains.exposed.v1.core.vendors.currentDialect
 import java.nio.ByteBuffer
-import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 import kotlin.uuid.toJavaUuid
 import kotlin.uuid.toKotlinUuid
@@ -21,8 +18,7 @@ import kotlin.uuid.toKotlinUuid
 // * @param columnName for a primary key column, `"id"` by default.
 // * @param random is used to generate unique Uuids.
 // */
-//@OptIn(ExperimentalUuidApi::class)
-//public open class KotlinxUuidTable(
+////public open class KotlinxUuidTable(
 //    name: String = "",
 //    columnName: String = "id",
 //) : IdTable<CompositeID>(name) {
@@ -67,11 +63,17 @@ fun Column<Uuid>.autoGenerate(): Column<Uuid> = apply {
 class UuidColumnType : ColumnType<Uuid>() {
     override fun sqlType(): String = currentDialect.dataTypeProvider.uuidType()
 
+    companion object {
+        fun isValidUuidString(str: String): Boolean = runCatching {
+            Uuid.parse(str)
+        }.isSuccess
+    }
+
     override fun valueFromDB(value: Any): Uuid = when {
         value is java.util.UUID -> value.toKotlinUuid()
         value is Uuid -> value
         value is ByteArray -> ByteBuffer.wrap(value).let { b -> valueFromDB(java.util.UUID(b.long, b.long)) }
-        value is String && Uuid.isValidUuidString(value) -> Uuid.parse(value)
+        value is String && isValidUuidString(value) -> Uuid.parse(value)
         value is String -> valueFromDB(value.toByteArray())
         else -> error("Unexpected value of type Uuid: $value of ${value::class.qualifiedName}")
     }

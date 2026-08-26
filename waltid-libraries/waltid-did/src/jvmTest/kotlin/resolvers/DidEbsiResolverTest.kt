@@ -4,42 +4,22 @@ import id.walt.crypto.keys.Key
 import id.walt.did.dids.document.DidDocument
 import id.walt.did.dids.resolver.local.DidEbsiResolver
 import id.walt.did.dids.resolver.local.LocalResolverMethod
-import io.ktor.client.*
-import io.ktor.client.engine.cio.*
+import id.walt.webdatafetching.WebDataFetcher
+import io.ktor.client.plugins.*
+import io.ktor.http.*
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import org.junit.jupiter.api.Assumptions
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.Arguments
 import org.junit.jupiter.params.provider.Arguments.arguments
 import org.junit.jupiter.params.provider.MethodSource
-import java.security.cert.X509Certificate
 import java.util.stream.Stream
-import javax.net.ssl.X509TrustManager
 
 class DidEbsiResolverTest : DidResolverTestBase() {
     override val resolver: LocalResolverMethod =
-        DidEbsiResolver(HttpClient(CIO) {
-            engine {
-                https {
-                    //disable https certificate verification
-                    trustManager = object : X509TrustManager {
-                        override fun checkClientTrusted(
-                            chain: Array<out X509Certificate?>?,
-                            authType: String?
-                        ) {
-                        }
-
-                        override fun checkServerTrusted(
-                            chain: Array<out X509Certificate?>?,
-                            authType: String?
-                        ) {
-                        }
-
-                        override fun getAcceptedIssuers(): Array<out X509Certificate?>? = null
-                    }
-                }
-            }
-        })
+        DidEbsiResolver(WebDataFetcher("did-ebsi-resolver-test"))
 
 
     // TODO: Include test in the scope of WAL-842
@@ -48,7 +28,13 @@ class DidEbsiResolverTest : DidResolverTestBase() {
     override fun `given a did String, when calling resolve, then the result is a valid did document`(
         did: String, key: JsonObject, resolverAssertion: resolverAssertion<DidDocument>
     ) {
-        super.`given a did String, when calling resolve, then the result is a valid did document`(did, key, resolverAssertion)
+        skipIfEbsiDidUnavailable {
+            super.`given a did String, when calling resolve, then the result is a valid did document`(
+                did,
+                key,
+                resolverAssertion
+            )
+        }
     }
 
 
@@ -60,8 +46,48 @@ class DidEbsiResolverTest : DidResolverTestBase() {
         key: JsonObject,
         resolverAssertion: resolverAssertion<Key>
     ) {
-        super.`given a did String, when calling resolveToKey, then the result is valid key`(did, key, resolverAssertion)
+        // Check availability upfront for resolveToKey since assertions may obscure the root cause
+        val resolveResult = runBlocking { resolver.resolve(did) }
+        checkEbsiDidAvailability(resolveResult)
+        
+        skipIfEbsiDidUnavailable {
+            super.`given a did String, when calling resolveToKey, then the result is valid key`(did, key, resolverAssertion)
+        }
     }
+
+    private fun checkEbsiDidAvailability(result: Result<DidDocument>) {
+        result.exceptionOrNull()?.let { ex ->
+            if (isEbsiDidUnavailable(ex)) {
+                // EBSI DIDs are externally hosted and may not always be available
+                Assumptions.abort<Unit>("Skipping test: EBSI DID resolver returned 404 or failed to resolve from both environments")
+            }
+        }
+    }
+
+    private fun skipIfEbsiDidUnavailable(block: () -> Unit) {
+        runCatching {
+            block()
+        }.onFailure { ex ->
+            if (isEbsiDidUnavailable(ex)) {
+                // EBSI DIDs are externally hosted and may not always be available
+                Assumptions.abort<Unit>("Skipping test: EBSI DID resolver returned 404 or failed to resolve from both environments")
+            } else {
+                throw ex
+            }
+        }
+    }
+
+    private fun isEbsiDidUnavailable(ex: Throwable): Boolean =
+        generateSequence(ex) { it.cause }.any { throwable ->
+            when (throwable) {
+                is ResponseException -> throwable.response.status == HttpStatusCode.NotFound
+                is IllegalStateException -> throwable.message?.contains("Failed to resolve EBSI DID") == true
+                is java.net.ConnectException -> true
+                is java.net.SocketTimeoutException -> true
+                is javax.net.ssl.SSLException -> true
+                else -> false
+            }
+        }
 
     companion object {
 
@@ -87,6 +113,7 @@ class DidEbsiResolverTest : DidResolverTestBase() {
         )
 
 
+        // EBSI DIDs are externally hosted and may not always be available.
         private val pilotEnvDidList: List<TestEntry> = listOf(
             TestEntry(
                 did = "did:ebsi:zfkNjYrzvx3bQn2SRyDZDMC",

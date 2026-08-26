@@ -6,17 +6,21 @@ import dev.mokkery.matcher.any
 import dev.mokkery.mock
 import id.walt.cose.Cose
 import id.walt.cose.CoseKey
+import id.walt.crypto2.jose.Jwk
+import id.walt.crypto2.keys.toPublicJwk
 import id.walt.mdoc.objects.digest.ValueDigest
 import id.walt.mdoc.objects.digest.ValueDigestList
 import id.walt.mdoc.objects.mso.DeviceKeyInfo
 import id.walt.mdoc.objects.mso.MobileSecurityObject
 import id.walt.mdoc.objects.mso.ValidityInfo
+import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.*
+import kotlin.io.encoding.Base64
+import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.test.*
 import kotlin.time.Clock
-import kotlin.time.ExperimentalTime
 
-@OptIn(ExperimentalTime::class)
+
 class MdocsCredentialSerializationTest {
 
     private val dummyValueDigest = ValueDigest(key = 1u, value = byteArrayOf())
@@ -27,9 +31,6 @@ class MdocsCredentialSerializationTest {
         kid = byteArrayOf(),
         x = byteArrayOf(),
         y = byteArrayOf()
-    )
-    private val dummyDeviceKeyInfo = DeviceKeyInfo(
-        deviceKey = dummyCoseKey
     )
     private val now = Clock.System.now()
     private val dummyValidityInfo = ValidityInfo(
@@ -78,11 +79,55 @@ class MdocsCredentialSerializationTest {
 
     }
 
-    private fun createDummyMso(): MobileSecurityObject = MobileSecurityObject(
+    @OptIn(ExperimentalEncodingApi::class)
+    @Test
+    fun `crypto2 holder key is read from the mobile security object for verification only`() = runTest {
+        val x = "2Z3gxK7IatHaxPWLYkBYn1XS0wKdL7fMQQuF_nGw2Kw"
+        val y = "41CM3oYupV2TNid0xDbESe0bzKWVNu0LU8kKQS47jUI"
+        every { mockExtractor.invoke(any()) } returns createDummyMso(
+            CoseKey(
+                kty = Cose.KeyTypes.EC2,
+                crv = Cose.EllipticCurves.P_256,
+                x = Base64.UrlSafe.decode("$x="),
+                y = Base64.UrlSafe.decode("$y="),
+            )
+        )
+        MdocsCredential.msoExtractionTestHook = mockExtractor
+
+        val holderKey = credential.getHolderCrypto2Key()
+        val holderJwk = Jwk.parse(
+            assertNotNull(holderKey.capabilities.publicKeyExporter).exportPublicKey().toPublicJwk(holderKey.spec)
+        )
+
+        assertEquals(x, holderJwk["x"]?.jsonPrimitive?.content)
+        assertEquals(y, holderJwk["y"]?.jsonPrimitive?.content)
+        assertNotNull(holderKey.capabilities.verifier)
+        assertNull(holderKey.capabilities.signer)
+        assertNull(holderKey.capabilities.privateKeyExporter)
+    }
+
+    @OptIn(ExperimentalEncodingApi::class)
+    @Test
+    fun `crypto2 holder key rejects device keys without verify permission`() = runTest {
+        every { mockExtractor.invoke(any()) } returns createDummyMso(
+            CoseKey(
+                kty = Cose.KeyTypes.EC2,
+                crv = Cose.EllipticCurves.P_256,
+                key_ops = listOf(1),
+                x = Base64.UrlSafe.decode("2Z3gxK7IatHaxPWLYkBYn1XS0wKdL7fMQQuF_nGw2Kw="),
+                y = Base64.UrlSafe.decode("41CM3oYupV2TNid0xDbESe0bzKWVNu0LU8kKQS47jUI="),
+            )
+        )
+        MdocsCredential.msoExtractionTestHook = mockExtractor
+
+        assertFailsWith<IllegalArgumentException> { credential.getHolderCrypto2Key() }
+    }
+
+    private fun createDummyMso(deviceKey: CoseKey = dummyCoseKey): MobileSecurityObject = MobileSecurityObject(
         version = "1.0",
         digestAlgorithm = "SHA-256",
         valueDigests = mapOf("namespace" to dummyDigestList),
-        deviceKeyInfo = dummyDeviceKeyInfo,
+        deviceKeyInfo = DeviceKeyInfo(deviceKey),
         docType = "org.iso.18013.5.1.mDL",
         validityInfo = dummyValidityInfo,
     )

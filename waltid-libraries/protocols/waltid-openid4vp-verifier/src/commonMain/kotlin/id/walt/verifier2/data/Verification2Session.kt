@@ -1,0 +1,340 @@
+package id.walt.verifier2.data
+
+import id.walt.credentials.formats.DigitalCredential
+import id.walt.credentials.presentations.formats.VerifiablePresentation
+import id.walt.crypto.keys.DirectSerializedKey
+import id.walt.ktornotifications.core.KtorSessionNotifications
+import id.walt.policies2.vc.CredentialPolicyResult
+import id.walt.policies2.vc.VCPolicyList
+import id.walt.policies2.vc.policies.WebhookPolicy
+import id.walt.policies2.vp.policies.VPPolicy2
+import id.walt.policies2.vp.policies.VPPolicyList
+import id.walt.verifier.openid.models.authorization.AuthorizationRequest
+import id.walt.verifier2.handlers.sessioncreation.VerificationSessionCreationResponse
+import id.walt.verifier2.verification2.Verifier2PolicyResults
+import io.ktor.http.*
+import kotlinx.datetime.DateTimeUnit
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.plus
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.Transient
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlin.time.Clock
+import kotlin.time.Instant
+import kotlin.uuid.Uuid
+
+
+@Serializable
+data class Verification2Session(
+    /**
+     * Verification Session ID (does not have to equal any OpenID4VP nonce or state)
+     */
+    val id: String = Uuid.random().toString(),
+
+    var setup: VerificationSessionSetup,
+    val data: JsonElement? = null, // Custom data
+
+    val creationDate: Instant = Clock.System.now(),
+
+    /**
+     * (Optional) Expiration time
+     * Verification Session will expire if it is left unused (no presentation is pushed to the session)
+     *
+     * **The Session is no longer eligible for expiry if it was used and presentation data was made available**
+     * (no matter if successful or failed)
+     */
+    val expirationDate: Instant? = Clock.System.now().plus(10, DateTimeUnit.MINUTE, TimeZone.UTC),
+
+    /**
+     * (Optional) Retention date.
+     * Date until when this Verification Session is kept (if it hasn't expired before that time already).
+     *
+     * After this date, it will be deleted with all associated verification information.
+     * If you would like to keep data of successful/failed Verification Sessions indefinitely, set the retentionDate to null.
+     */
+    val retentionDate: Instant = Clock.System.now().plus(10, DateTimeUnit.YEAR, TimeZone.UTC),
+
+    /**
+     * Current status for this Verification Session
+     */
+    var status: VerificationSessionStatus,
+    var attempted: Boolean = false,
+
+    var notifications: KtorSessionNotifications? = null,
+
+    val reattemptable: Boolean = true,
+
+    /**
+     * Minimal authorization request if request is provided by URL
+     */
+    val bootstrapAuthorizationRequest: AuthorizationRequest? = null,
+    val bootstrapAuthorizationRequestUrl: Url? = null,
+
+    /**
+     * OpenID4VP Authorization Request used for this Verification Session
+     */
+    val authorizationRequest: AuthorizationRequest,
+    val authorizationRequestUrl: Url?,
+
+    val signedAuthorizationRequestJwt: String? = null,
+    /** Opaque service-level reference used to resolve the request-object signing key after restart. */
+    val requestSigningKeyReference: String? = null,
+    var ephemeralDecryptionKey: DirectSerializedKey? = null,
+    /** Versioned crypto2 key used by new OpenID4VP JWE and Annex C HPKE sessions. */
+    @Transient
+    var crypto2EphemeralDecryptionKey: String? = null,
+    /** JWK thumbprint for the response-encryption key. */
+    val jwkThumbprint: String? = null,
+
+    /**
+     * OpenID4VP configuration for this Verification Session
+     */
+    val requestMode: RequestMode,
+
+    /**
+     * Policies
+     */
+    var policies: DefinedVerificationPolicies = DefinedVerificationPolicies(),
+
+    @SerialName("policy_results")
+    var policyResults: Verifier2PolicyResults? = null,
+
+    @SerialName("presentation_validation_results")
+    var presentationValidationResults: Map<String, Map<String, VPPolicy2.PolicyRunResult>>? = null,
+
+    val redirects: VerificationSessionRedirects? = null,
+
+    /**
+     * Presented data
+     */
+    @SerialName("presented_raw_data")
+    var presentedRawData: PresentedRawData? = null,
+
+    @SerialName("presented_presentations")
+    var presentedPresentations: Map<String, VerifiablePresentation>? = null,
+
+    @SerialName("presented_credentials")
+    var presentedCredentials: Map<String, List<DigitalCredential>>? = null,
+
+    var statusReason: String? = null,
+
+    /**
+     * A fresh cryptographic random value appended to the success `redirect_uri` per
+     * OID4VP 1.0 §implementation_considerations_direct_post (step 6).
+     *
+     * The Verifier's frontend receives this value when the wallet redirects the user browser
+     * back after a successful presentation, and MUST present it alongside the session's
+     * `transaction-id` to the Response Endpoint to fetch the VP Token. This prevents session
+     * fixation: only the browser that received the redirect can complete the flow.
+     *
+     * Null when no `successRedirectUri` was configured or the session hasn't been completed yet.
+     */
+    @SerialName("response_code")
+    var responseCode: String? = null,
+
+    /**
+     * Structured failure detail. Populated when the session ends in [VerificationSessionStatus.FAILED]
+     * (presentation validation, DCQL fulfillment, VC policy violations, or an OID4VP §8.5 wallet
+     * error response). Null for successful sessions or sessions that have not reached a failure
+     * state. Additive — legacy consumers that only read [status]/[statusReason] keep working.
+     */
+    @SerialName("failure")
+    var failure: SessionFailure? = null,
+) {
+    fun persistenceExpirationDate(): Instant =
+        if (attempted || status in setOf(VerificationSessionStatus.SUCCESSFUL, VerificationSessionStatus.FAILED)) retentionDate
+        else expirationDate ?: creationDate.plus(10, DateTimeUnit.MINUTE, TimeZone.UTC)
+
+
+    fun deletePII() {
+        setup = setup.publicView()
+        notifications = notifications?.publicView()
+        ephemeralDecryptionKey = null
+        crypto2EphemeralDecryptionKey = null
+        policies = policies.publicView()
+        presentedRawData = null
+        presentedPresentations = null
+        presentedCredentials = null
+
+        fun redactPolicyResult(policyResult: CredentialPolicyResult) {
+            policyResult.result?.let { resultElement ->
+                policyResult.result = redactCredentialSubject(resultElement)
+            }
+        }
+
+        policyResults?.vpPolicies?.values?.forEach { innerMap ->
+            innerMap.values.forEach { policyResult ->
+                policyResult.results = emptyMap()
+            }
+        }
+
+        buildList {
+            policyResults?.vcPolicies?.let(::addAll)
+            policyResults?.specificVcPolicies?.values?.flatten()?.let(::addAll)
+            (failure as? SessionFailure.VcPolicyViolations)?.violations?.let(::addAll)
+        }.forEach(::redactPolicyResult)
+
+        (failure as? SessionFailure.PresentationValidation)?.failedPolicies?.values
+            ?.flatMap { it.values }
+            ?.forEach { it.results = emptyMap() }
+    }
+
+    fun publicView(): Verification2Session = copy(
+        setup = setup.publicView(),
+        notifications = notifications?.publicView(),
+        policies = policies.publicView(),
+        ephemeralDecryptionKey = null,
+        crypto2EphemeralDecryptionKey = null,
+    )
+
+    private fun redactCredentialSubject(resultElement: JsonElement): JsonElement {
+        val resultObj = resultElement.jsonObject
+
+        val resultBlacklist = setOf("signed_credential")
+        val vcBlacklist = setOf("credentialSubject")
+
+        var redactedObj = JsonObject(resultObj.filterKeys { it !in resultBlacklist })
+
+        val verifiedData = redactedObj["verified_data"]?.jsonObject ?: return redactedObj
+        val vc = verifiedData["vc"]?.jsonObject ?: return redactedObj
+
+        val redactedVc = JsonObject(vc.filterKeys { it !in vcBlacklist })
+        val redactedVerifiedData = JsonObject(verifiedData + ("vc" to redactedVc))
+
+        return JsonObject(redactedObj + ("verified_data" to redactedVerifiedData))
+    }
+
+    @Serializable
+    data class VerificationSessionNotifications(
+        val webhook: VerificationSessionWebhookNotification? = null
+    ) {
+        @Serializable
+        data class VerificationSessionWebhookNotification(
+            val url: String,
+            val basicAuthUser: String? = null,
+            val basicAuthPass: String? = null,
+            val bearerToken: String? = null
+        )
+    }
+
+    @Serializable
+    data class PresentedRawData(
+        val vpToken: Map<String, List<String>>,
+        val state: String?
+    )
+
+    @Serializable
+    data class DefinedVerificationPolicies(
+        /** Policies to run on the presentations (Policies from: waltid-verification-policies2-vp) */
+        @SerialName("vp_policies")
+        val vp_policies: VPPolicyList? = null,
+
+        /** Policies to run on the credentials (Policies from: waltid-verification-policies2) */
+        @SerialName("vc_policies")
+        val vc_policies: VCPolicyList? = null,
+
+        /** Policies to run on specific credential ids (Policies from: waltid-verification-policies2) */
+        @SerialName("specific_vc_policies")
+        val specific_vc_policies: Map<String, VCPolicyList>? = null
+    )
+
+    @Serializable
+    data class VerificationSessionRedirects(
+        @SerialName("success_redirect_uri")
+        var successRedirectUri: Url? = null,
+        @SerialName("error_redirect_uri")
+        val errorRedirectUri: Url? = null,
+    )
+
+
+    enum class VerificationSessionStatus(val successful: Boolean? = null) {
+        /** Session ended up in unknown flow (should be avoided if possible) */
+        UNKNOWN,
+
+        /** Session was created and is active (and can be used) */
+        ACTIVE,
+
+        /** Session was not used yet, but is not yet expired (and can be used) */
+        UNUSED,
+
+        /** Session is in use
+         * (AuthorizationRequest was requested)
+         */
+        IN_USE,
+
+        /** Checking if received presentation will be processed (validated etc) */
+        VALIDATING_RECEIVED_REQUEST,
+
+        /** Received presentation is being processed (presentation validation + verification policies) */
+        PROCESSING_FLOW,
+
+        /** Verification request expired without being utilized */
+        EXPIRED(false),
+
+        /** Verification request was completed fully successfully (all validation & verification policies passed) */
+        SUCCESSFUL(true),
+
+        /** Verification request was unsuccessful (presentation validation or verification requests failed) */
+        FAILED(false)
+    }
+
+    fun toSessionCreationResponse(): VerificationSessionCreationResponse {
+        return VerificationSessionCreationResponse(
+            sessionId = id,
+            bootstrapAuthorizationRequestUrl = bootstrapAuthorizationRequestUrl,
+            fullAuthorizationRequestUrl = authorizationRequestUrl,
+            creationTarget = null,
+            data = data
+        )
+    }
+
+    enum class RequestMode {
+        /**
+         * All parameters in the query string, unsigned.
+         * Use only for simple, same-device flows (or not at all)
+         */
+        URL_ENCODED,
+
+        /**
+         * Signed Request by Value (can Authenticate the Verifier).
+         */
+        URL_ENCODED_SIGNED,
+
+        /**
+         * Unsigned Request by Reference
+         * Always use for cross-device flows (QR codes), large requests
+         */
+        REQUEST_URI,
+
+        /**
+         * Signed Request by Reference
+         * Always use for cross-device flows (QR codes), large requests
+         */
+        REQUEST_URI_SIGNED,
+
+        /**
+         * Data object passed to a platform API (optionally signed)
+         */
+        DC_API
+    }
+}
+
+internal fun Verification2Session.DefinedVerificationPolicies.publicView() = copy(
+    vc_policies = vc_policies?.publicView(),
+    specific_vc_policies = specific_vc_policies?.mapValues { (_, policies) -> policies.publicView() },
+)
+
+private fun VCPolicyList.publicView() = copy(
+    policies = policies.map { policy ->
+        if (policy is WebhookPolicy) {
+            policy.copy(
+                basicAuthUsername = null,
+                basicAuthPassword = null,
+                bearerAuthToken = null,
+            )
+        } else policy
+    }
+)

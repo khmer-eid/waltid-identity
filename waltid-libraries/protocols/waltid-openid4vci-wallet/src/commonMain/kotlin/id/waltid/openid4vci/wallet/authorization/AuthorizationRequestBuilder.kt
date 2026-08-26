@@ -1,0 +1,332 @@
+package id.waltid.openid4vci.wallet.authorization
+
+import id.walt.openid4vci.ResponseType
+import id.walt.openid4vci.metadata.oauth.AuthorizationServerMetadata
+import id.walt.openid4vci.requests.authorization.OPENID_CREDENTIAL_AUTHORIZATION_DETAIL_TYPE
+import id.waltid.openid4vci.wallet.oauth.ClientConfiguration
+import id.waltid.openid4vci.wallet.oauth.PKCEManager
+import id.waltid.openid4vci.wallet.oauth.StateManager
+import io.github.oshai.kotlinlogging.KotlinLogging
+import io.ktor.http.*
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+
+private val log = KotlinLogging.logger {}
+
+/**
+ * Builds OAuth 2.0 authorization requests with OpenID4VCI extensions.
+ * Implements §5 of OpenID4VCI 1.0 specification (Authorization Endpoint).
+ * 
+ * @property clientConfig The OAuth 2.0 client configuration
+ */
+class AuthorizationRequestBuilder(
+    private val clientConfig: ClientConfiguration,
+) {
+
+    private val json = Json {
+        ignoreUnknownKeys = true
+        encodeDefaults = false
+        prettyPrint = false
+    }
+
+    /**
+     * Authorization details for OpenID4VCI (RFC 9396)
+     */
+    @OptIn(ExperimentalSerializationApi::class)
+    @Serializable
+    data class AuthorizationDetails(
+        @EncodeDefault(EncodeDefault.Mode.ALWAYS)
+        val type: String = OPENID_CREDENTIAL_AUTHORIZATION_DETAIL_TYPE,
+        val credential_configuration_id: String,
+        val locations: List<String>? = null,
+    )
+
+    /**
+     * Result of building an authorization request
+     */
+    @Serializable
+    data class AuthorizationRequest(
+        val url: String,
+        val state: String,
+        val pkceData: PKCEManager.PKCEData?,
+    )
+
+    /**
+     * Complete state for a Pushed Authorization Request.
+     *
+     * The caller sends [parameters] to the PAR endpoint and retains [state] and
+     * [pkceData] until the authorization callback is validated.
+     */
+    @Serializable
+    data class PushedAuthorizationRequest(
+        val parameters: Map<String, String>,
+        val state: String,
+        val pkceData: PKCEManager.PKCEData?,
+    )
+
+    /**
+     * Builds an authorization request URL
+     * 
+     * @param authorizationEndpoint The authorization endpoint URL from metadata
+     * @param credentialConfigurationId The credential configuration ID to request
+     * @param issuerState Optional issuer state from credential offer (for authorization code grant)
+     * @param scope Optional OAuth scope
+     * @param usePKCE Whether to use PKCE (default: true)
+     * @param metadata Authorization server metadata (for PKCE validation)
+     * @return AuthorizationRequest containing the URL, state, and PKCE data
+     */
+    fun buildAuthorizationRequest(
+        authorizationEndpoint: String,
+        credentialConfigurationId: String,
+        issuerState: String? = null,
+        scope: String? = null,
+        usePKCE: Boolean = true,
+        metadata: AuthorizationServerMetadata? = null,
+        redirectUri: String? = null,
+        dpopJkt: String? = null,
+    ): AuthorizationRequest = buildAuthorizationRequestForCredentialConfigurations(
+        authorizationEndpoint = authorizationEndpoint,
+        credentialConfigurationIds = listOf(credentialConfigurationId),
+        issuerState = issuerState,
+        scope = scope,
+        usePKCE = usePKCE,
+        metadata = metadata,
+        redirectUri = redirectUri,
+        dpopJkt = dpopJkt,
+    )
+
+    /** Builds one authorization request containing all offered credential configurations. */
+    fun buildAuthorizationRequestForCredentialConfigurations(
+        authorizationEndpoint: String,
+        credentialConfigurationIds: List<String>,
+        issuerState: String? = null,
+        scope: String? = null,
+        usePKCE: Boolean = true,
+        metadata: AuthorizationServerMetadata? = null,
+        redirectUri: String? = null,
+        dpopJkt: String? = null,
+        /**
+         * `locations` for each `openid_credential` authorization detail.
+         *
+         * OID4VCI 1.0 Section 5.1.1: when the Credential Issuer metadata advertises
+         * `authorization_servers`, `locations` MUST be present and equal the Credential Issuer
+         * Identifier - it tells the authorization server which issuer the grant is for, since one
+         * authorization server can front several. Omit it when only one authorization server is
+         * implied, where the parameter is optional.
+         */
+        credentialIssuerLocations: List<String>? = null,
+    ): AuthorizationRequest {
+        require(authorizationEndpoint.isNotBlank()) { "Authorization endpoint cannot be blank" }
+        require(credentialConfigurationIds.isNotEmpty() && credentialConfigurationIds.all { it.isNotBlank() }) {
+            "At least one non-blank credential configuration ID is required"
+        }
+
+        log.info { "Building authorization request for credential configuration: ${credentialConfigurationIds.first()}" }
+        log.trace { "Authorization endpoint: $authorizationEndpoint" }
+        log.trace { "Issuer state: ${issuerState ?: "none"}, Scope: $scope" }
+
+        // Generate state for CSRF protection
+        val state = StateManager.generateState()
+        log.trace { "Generated state for CSRF protection" }
+
+        // Generate PKCE data if enabled
+        var pkceData: PKCEManager.PKCEData? = null
+        if (usePKCE) {
+            // Determine PKCE method based on metadata
+            val method = determinePKCEMethod(metadata)
+            pkceData = PKCEManager.generatePKCEData(method)
+            log.debug { "Generated PKCE challenge using method: ${pkceData.codeChallengeMethod.value}" }
+        } else {
+            log.debug { "PKCE disabled for this authorization request" }
+        }
+
+        // Build authorization_details
+        val authzDetailsJson = json.encodeToString(
+            credentialConfigurationIds.distinct().map {
+                AuthorizationDetails(credential_configuration_id = it, locations = credentialIssuerLocations)
+            }
+        )
+        log.trace { "Authorization details JSON: ${authzDetailsJson.take(100)}${if (authzDetailsJson.length > 100) "..." else ""}" }
+
+        // Build URL with query parameters
+        val urlBuilder = URLBuilder(authorizationEndpoint)
+        urlBuilder.parameters.apply {
+            append("response_type", ResponseType.CODE.value)
+            append("client_id", clientConfig.clientId)
+            append("redirect_uri", redirectUri ?: clientConfig.primaryRedirectUri)
+            append("state", state)
+            // OID4VCI 1.0 Section 5.1.2 offers two alternative ways to say which credential is wanted:
+            // `authorization_details` (RAR) or a `scope` the issuer publishes on the credential
+            // configuration. They are alternatives, not companions - sending both leaves the authorization
+            // server to guess, and a server driving the scope-based profile counts the extra
+            // `authorization_details` as an unexpected parameter. A supplied scope therefore replaces it.
+            if (scope == null) append("authorization_details", authzDetailsJson)
+
+            // Add issuer_state if present (from authorization code grant offer)
+            issuerState?.let {
+                append("issuer_state", it)
+                log.trace { "Added issuer_state parameter to authorization request" }
+            }
+
+            // Add scope if present
+            scope?.let { append("scope", it) }
+
+            // Add PKCE parameters if enabled
+            pkceData?.let {
+                append("code_challenge", it.codeChallenge)
+                append("code_challenge_method", it.codeChallengeMethod.value)
+            }
+
+            dpopJkt?.let { append("dpop_jkt", it) }
+        }
+
+        val authorizationUrl = urlBuilder.buildString()
+        log.info { "Successfully built authorization request - Client: ${clientConfig.clientId}, PKCE: $usePKCE" }
+        log.trace { "Authorization URL length: ${authorizationUrl.length} characters" }
+
+        return AuthorizationRequest(
+            url = authorizationUrl,
+            state = state,
+            pkceData = pkceData
+        )
+    }
+
+    /**
+     * Builds a Pushed Authorization Request (PAR) body
+     * 
+     * @param credentialConfigurationId The credential configuration ID to request
+     * @param issuerState Optional issuer state from credential offer
+     * @param scope Optional OAuth scope
+     * @param usePKCE Whether to use PKCE
+     * @param metadata Authorization server metadata
+     * @return Map of parameters for PAR request and PKCE data
+     */
+    fun buildPushedAuthorizationRequest(
+        credentialConfigurationId: String,
+        issuerState: String? = null,
+        scope: String? = null,
+        usePKCE: Boolean = true,
+        metadata: AuthorizationServerMetadata? = null,
+        dpopJkt: String? = null,
+    ): Pair<Map<String, String>, PKCEManager.PKCEData?> {
+        val request = buildPushedAuthorizationRequestState(
+            credentialConfigurationId = credentialConfigurationId,
+            issuerState = issuerState,
+            scope = scope,
+            usePKCE = usePKCE,
+            metadata = metadata,
+            dpopJkt = dpopJkt,
+        )
+        return request.parameters to request.pkceData
+    }
+
+    /** Builds the complete PAR request state, including the OAuth state binding. */
+    fun buildPushedAuthorizationRequestState(
+        credentialConfigurationId: String,
+        issuerState: String? = null,
+        scope: String? = null,
+        usePKCE: Boolean = true,
+        metadata: AuthorizationServerMetadata? = null,
+        redirectUri: String? = null,
+        dpopJkt: String? = null,
+    ): PushedAuthorizationRequest = buildPushedAuthorizationRequestStateForCredentialConfigurations(
+        credentialConfigurationIds = listOf(credentialConfigurationId),
+        issuerState = issuerState,
+        scope = scope,
+        usePKCE = usePKCE,
+        metadata = metadata,
+        redirectUri = redirectUri,
+        dpopJkt = dpopJkt,
+    )
+
+    /** Builds one PAR body containing all offered credential configurations. */
+    fun buildPushedAuthorizationRequestStateForCredentialConfigurations(
+        credentialConfigurationIds: List<String>,
+        issuerState: String? = null,
+        scope: String? = null,
+        usePKCE: Boolean = true,
+        metadata: AuthorizationServerMetadata? = null,
+        redirectUri: String? = null,
+        dpopJkt: String? = null,
+        /**
+         * `locations` for each `openid_credential` authorization detail.
+         *
+         * OID4VCI 1.0 Section 5.1.1: when the Credential Issuer metadata advertises
+         * `authorization_servers`, `locations` MUST be present and equal the Credential Issuer
+         * Identifier - it tells the authorization server which issuer the grant is for, since one
+         * authorization server can front several. Omit it when only one authorization server is
+         * implied, where the parameter is optional.
+         */
+        credentialIssuerLocations: List<String>? = null,
+    ): PushedAuthorizationRequest {
+        require(credentialConfigurationIds.isNotEmpty() && credentialConfigurationIds.all { it.isNotBlank() }) {
+            "At least one non-blank credential configuration ID is required"
+        }
+
+        val state = StateManager.generateState()
+
+        var pkceData: PKCEManager.PKCEData? = null
+        if (usePKCE) {
+            val method = determinePKCEMethod(metadata)
+            pkceData = PKCEManager.generatePKCEData(method)
+        }
+
+        val authzDetailsJson = json.encodeToString(
+            credentialConfigurationIds.distinct().map {
+                AuthorizationDetails(credential_configuration_id = it, locations = credentialIssuerLocations)
+            }
+        )
+
+        val parameters = mutableMapOf<String, String>()
+        parameters["response_type"] = ResponseType.CODE.value
+        parameters["client_id"] = clientConfig.clientId
+        parameters["redirect_uri"] = redirectUri ?: clientConfig.primaryRedirectUri
+        parameters["state"] = state
+        // OID4VCI 1.0 Section 5.1.2 offers two alternative ways to say which credential is wanted:
+        // `authorization_details` (RAR) or a `scope` the issuer publishes on the credential
+        // configuration. They are alternatives, not companions - sending both leaves the authorization
+        // server to guess, and a server driving the scope-based profile counts the extra
+        // `authorization_details` as an unexpected parameter. A supplied scope therefore replaces it.
+        if (scope == null) parameters["authorization_details"] = authzDetailsJson
+
+        issuerState?.let { parameters["issuer_state"] = it }
+        scope?.let { parameters["scope"] = it }
+
+        pkceData?.let {
+            parameters["code_challenge"] = it.codeChallenge
+            parameters["code_challenge_method"] = it.codeChallengeMethod.value
+        }
+
+        dpopJkt?.let { parameters["dpop_jkt"] = it }
+
+        log.debug { "Built PAR request parameters for credential: ${credentialConfigurationIds.first()}" }
+        return PushedAuthorizationRequest(
+            parameters = parameters,
+            state = state,
+            pkceData = pkceData,
+        )
+    }
+
+    /**
+     * Determines the appropriate PKCE code challenge method based on server metadata
+     */
+    private fun determinePKCEMethod(metadata: AuthorizationServerMetadata?): PKCEManager.CodeChallengeMethod {
+        val supportedMethods = metadata?.codeChallengeMethodsSupported ?: emptyList()
+
+        return when {
+            supportedMethods.isEmpty() -> {
+                log.debug { "No PKCE methods in metadata, using S256" }
+                PKCEManager.CodeChallengeMethod.S256
+            }
+
+            "S256" in supportedMethods || "s256" in supportedMethods -> {
+                log.debug { "Using PKCE method: S256" }
+                PKCEManager.CodeChallengeMethod.S256
+            }
+
+            else -> error("Authorization server does not advertise the required S256 PKCE method")
+        }
+    }
+}

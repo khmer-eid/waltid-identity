@@ -1,4 +1,3 @@
-@file:OptIn(ExperimentalUuidApi::class, ExperimentalTime::class)
 
 package id.walt.webwallet.service.events
 
@@ -12,9 +11,7 @@ import org.jetbrains.exposed.v1.javatime.date
 import org.jetbrains.exposed.v1.jdbc.*
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 import java.time.LocalDate
-import kotlin.time.ExperimentalTime
 import kotlin.time.toJavaInstant
-import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
 class EventService {

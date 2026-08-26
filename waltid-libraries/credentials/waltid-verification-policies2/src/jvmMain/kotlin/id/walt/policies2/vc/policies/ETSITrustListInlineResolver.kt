@@ -1,0 +1,231 @@
+package id.walt.policies2.vc.policies
+
+import id.walt.certificate.x509.X509CertificateUtil
+import id.walt.trust.model.SourceAcceptancePolicy
+import id.walt.trust.model.SourceLoadOptions
+import id.walt.trust.model.TrustDecision
+import id.walt.trust.model.TrustedEntityType
+import id.walt.trust.service.DefaultTrustRegistryService
+import id.walt.trust.store.InMemoryTrustStore
+import io.github.oshai.kotlinlogging.KotlinLogging
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlin.time.Clock
+import id.walt.certificate.x509.truststore.InMemoryTrustStore as X509TrustStore
+
+private val log = KotlinLogging.logger { }
+
+/**
+ * JVM implementation of inline trust list resolution using waltid-trust-registry library.
+ */
+actual object ETSITrustListInlineResolver {
+    
+    actual suspend fun resolve(
+        certificateChain: List<String>,
+        trustLists: List<String>,
+        expectedEntityType: String?,
+        expectedServiceType: String?,
+        allowStaleSource: Boolean,
+        requireAuthenticated: Boolean,
+        validateSignatures: Boolean,
+        trustedSourceSignerCertificates: List<String>
+    ): Result<JsonElement> {
+        // Create an ephemeral trust registry for this verification request
+        val trustStore = InMemoryTrustStore()
+        val trustService = DefaultTrustRegistryService(trustStore)
+        val loadOptions = SourceLoadOptions(
+            acceptancePolicy = when {
+                !validateSignatures -> SourceAcceptancePolicy.ALLOW_UNVERIFIED
+                trustedSourceSignerCertificates.isNotEmpty() -> SourceAcceptancePolicy.REQUIRE_AUTHENTICATED
+                else -> SourceAcceptancePolicy.ALLOW_UNSIGNED
+            },
+            trustedSignerCertificates = trustedSourceSignerCertificates
+        )
+        
+        // Load all trust lists, counting how many succeed
+        var loadedCount = 0
+        for ((index, source) in trustLists.withIndex()) {
+            val sourceId = "inline-source-$index"
+
+            try {
+                val result = if (isUrl(source)) {
+                    log.debug { "Loading trust list from URL: $source" }
+                    trustService.loadSourceFromUrl(
+                        sourceId = sourceId,
+                        url = source,
+                        options = loadOptions
+                    )
+                } else {
+                    log.debug { "Loading trust list from inline content (${source.length} chars)" }
+                    trustService.loadSourceFromContent(
+                        sourceId = sourceId,
+                        content = source,
+                        sourceUrl = null,
+                        options = loadOptions
+                    )
+                }
+
+                if (!result.success) {
+                    log.warn { "Failed to load trust list source $sourceId: ${result.error}" }
+                } else {
+                    loadedCount++
+                    log.debug { "Loaded source $sourceId: ${result.entitiesLoaded} entities, ${result.servicesLoaded} services" }
+                }
+            } catch (e: Exception) {
+                log.warn(e) { "Error loading trust list source $sourceId" }
+            }
+        }
+
+        // Fail with a distinct error if no sources could be loaded at all — this is a
+        // configuration/network problem, not a negative trust decision.
+        if (loadedCount == 0) {
+            return Result.failure(ETSITrustListPolicyException(
+                "No trust list sources could be loaded (${trustLists.size} attempted, 0 succeeded). " +
+                "Check trust list URLs and network connectivity."
+            ))
+        }
+        
+        // Parse expected entity type
+        val entityType = expectedEntityType?.let {
+            runCatching { TrustedEntityType.valueOf(it) }.getOrNull()
+        }
+        
+        val decision = trustService.resolveCertificateChain(
+            certificateChainPemOrDer = certificateChain,
+            instant = Clock.System.now(),
+            expectedEntityType = entityType,
+            expectedServiceType = expectedServiceType
+        )
+        return evaluateAndBuildResult(decision, allowStaleSource, requireAuthenticated)
+    }
+    
+    private fun isUrl(source: String): Boolean {
+        val trimmed = source.trim()
+        return trimmed.startsWith("http://") || trimmed.startsWith("https://")
+    }
+    
+    private fun evaluateAndBuildResult(
+        decision: TrustDecision,
+        allowStaleSource: Boolean,
+        requireAuthenticated: Boolean
+    ): Result<JsonElement> {
+        val decisionCode = decision.decision.name
+        val freshness = decision.sourceFreshness.name
+        val authenticity = decision.authenticity.name
+
+        if (authenticity == "FAILED") {
+            return Result.failure(ETSITrustListPolicyException("Trust source authenticity validation failed"))
+        }
+        if (requireAuthenticated && authenticity != "AUTHENTICATED") {
+            return Result.failure(ETSITrustListPolicyException(
+                "Trust source authenticity not validated (got: $authenticity)"
+            ))
+        }
+        
+        return when (decisionCode) {
+            "TRUSTED" -> {
+                if (freshness == "STALE" && !allowStaleSource) {
+                    Result.failure(ETSITrustListPolicyException(
+                        "Trust source is stale (set allowStaleSource=true to allow)"
+                    ))
+                } else if (freshness == "EXPIRED") {
+                    Result.failure(ETSITrustListPolicyException(
+                        "Trust source has expired"
+                    ))
+                } else {
+                    Result.success(buildSuccessJson(decision))
+                }
+            }
+            
+            "STALE_SOURCE" -> {
+                if (allowStaleSource) {
+                    Result.success(buildSuccessJson(decision, warning = "Trust source is stale"))
+                } else {
+                    Result.failure(ETSITrustListPolicyException(
+                        "Trust source is stale or expired"
+                    ))
+                }
+            }
+            
+            else -> {
+                Result.failure(ETSITrustListPolicyException(
+                    "Certificate not trusted: $decisionCode"
+                ))
+            }
+        }
+    }
+    
+    private fun buildSuccessJson(decision: TrustDecision, warning: String? = null): JsonElement {
+        return buildJsonObject {
+            put("trusted", JsonPrimitive(true))
+            put("decision", JsonPrimitive(decision.decision.name))
+            decision.matchedEntity?.let { entity ->
+                put("matchedEntity", buildJsonObject {
+                    put("entityId", JsonPrimitive(entity.entityId))
+                    put("entityType", JsonPrimitive(entity.entityType.name))
+                    put("legalName", JsonPrimitive(entity.legalName))
+                    entity.country?.let { put("country", JsonPrimitive(it)) }
+                })
+            }
+            decision.matchedService?.let { service ->
+                put("matchedService", buildJsonObject {
+                    put("serviceId", JsonPrimitive(service.serviceId))
+                    put("serviceType", JsonPrimitive(service.serviceType))
+                    put("status", JsonPrimitive(service.status.name))
+                })
+            }
+            decision.matchedSource?.let { source ->
+                put("matchedSource", buildJsonObject {
+                    put("sourceId", JsonPrimitive(source.sourceId))
+                    put("sourceFamily", JsonPrimitive(source.sourceFamily.name))
+                    put("displayName", JsonPrimitive(source.displayName))
+                })
+            }
+            put("sourceFreshness", JsonPrimitive(decision.sourceFreshness.name))
+            put("authenticity", JsonPrimitive(decision.authenticity.name))
+            if (decision.warnings.isNotEmpty() || warning != null) {
+                put("warnings", buildJsonArray {
+                    warning?.let { add(JsonPrimitive(it)) }
+                    decision.warnings.forEach { add(JsonPrimitive(it)) }
+                })
+            }
+        }
+    }
+}
+
+/**
+ * JVM implementation of certificate chain validation using waltid-x509 library.
+ * Uses PKIX path building and validation for proper certificate chain verification.
+ * @param certificateChain List of PEM-encoded certificates
+ * @param trustedIndex Index of the first trusted certificate in the chain 0 -> leaf, 1 -> intermediate, etc. last -> root.
+ */
+actual fun validateCertificateChainToIndex(
+    certificateChain: List<String>,
+    trustedIndex: Int
+): Pair<Boolean, String?> {
+    if (trustedIndex == 0) {
+        // The leaf certificate itself is trusted, no chain to validate
+        return true to null
+    }
+
+    if (trustedIndex >= certificateChain.size) {
+        return false to "Trusted index $trustedIndex is out of bounds (chain size: ${certificateChain.size})"
+    }
+
+    // Convert PEM strings to CertificateDer
+    val certs = certificateChain.map {
+        X509CertificateUtil.parseCertificatePem(it)
+    }
+
+    val trustStore = X509TrustStore(certs.subList(trustedIndex, certs.size))
+    val validationResult = runBlocking {
+        X509CertificateUtil.validateCertificateChain(certs, trustStore)
+    }
+    val validationMessage = validationResult.log.map {
+        "${it.severity} ${it.subjectDn} (${it.validatorId}):  ${it.message}"
+    }.reduce { acc, line -> "$acc\n$line" }
+    return validationResult.valid to validationMessage
+}

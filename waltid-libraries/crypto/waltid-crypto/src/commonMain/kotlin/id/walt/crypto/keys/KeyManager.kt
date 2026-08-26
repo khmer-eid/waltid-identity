@@ -71,9 +71,23 @@ object KeyManager {
         val function = keyTypeGeneration[generationRequest.backend] ?: throw KeyBackendNotSupportedException(
             generationRequest.backend
         )
-        log.debug { "Creating key with generation request: $generationRequest" }
+        log.debug(generationRequest::safeLogDescription)
 
         return function.invoke(generationRequest)
+    }
+
+    /**
+     * Type-safe overload of [createKey] for [TypedKeyGenerationRequest].
+     *
+     * Dispatches directly to the appropriate backend without any stringly-typed
+     * discriminator or [kotlinx.serialization.json.JsonObject] config encoding.
+     */
+    suspend fun createKey(request: TypedKeyGenerationRequest): Key = when (request) {
+        is TypedKeyGenerationRequest.Jwk -> JWKKey.generate(request.keyType)
+        is TypedKeyGenerationRequest.Tse -> TSEKey.generate(request.keyType, request.config)
+        is TypedKeyGenerationRequest.Azure -> AzureKeyRestApi.generate(request.keyType, request.config)
+        is TypedKeyGenerationRequest.Oci -> OCIKeyRestApi.generateKey(request.keyType, request.config)
+        is TypedKeyGenerationRequest.Aws -> AWSKeyRestAPI.generate(request.keyType, request.config)
     }
 
     suspend fun resolveSerializedKey(jsonString: String): Key =
@@ -90,5 +104,8 @@ object KeyManager {
         resolveSerializedKeyBlocking(json = Json.parseToJsonElement(jsonString).jsonObject)
 
 }
+
+internal fun KeyGenerationRequest.safeLogDescription(): String =
+    "Creating $keyType key with backend $backend" + name?.let { " and name $it" }.orEmpty()
 
 expect fun resolveSerializedKeyBlocking(json: JsonObject): Key

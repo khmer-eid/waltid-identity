@@ -1,7 +1,5 @@
-@file:OptIn(ExperimentalUuidApi::class)
 
 package id.walt.webwallet.web.controllers
-
 
 import id.walt.webwallet.db.models.WalletDid
 import id.walt.webwallet.web.controllers.DidCreation.didCreate
@@ -19,7 +17,6 @@ import io.ktor.server.response.*
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlin.uuid.ExperimentalUuidApi
 
 fun Application.dids() = walletRoute {
     route("dids", {
@@ -141,13 +138,13 @@ fun Application.dids() = walletRoute {
         }) {
             val req = call.receive<DidImportRequest>()
 
-                val key: Any = when (val k = req.key ?: throw BadRequestException("key is required (PEM or JWK)")) {
-                    is JsonObject -> k
-                    is JsonPrimitive -> if (k.isString) k.content else throw BadRequestException("key must be a string (PEM/JWK JSON) or object (JWK)")
-                    else -> throw BadRequestException("key must be a string (PEM/JWK JSON) or object (JWK)")
-                }
-                val result = call.getWalletService().importDid(did = req.did, key = key, alias = req.alias)
-                call.respond(result)
+            val key: Any = when (val k = req.key ?: throw BadRequestException("key is required (PEM or JWK)")) {
+                is JsonObject -> k
+                is JsonPrimitive -> if (k.isString) k.content else throw BadRequestException("key must be a string (PEM/JWK JSON) or object (JWK)")
+                else -> throw BadRequestException("key must be a string (PEM/JWK JSON) or object (JWK)")
+            }
+            val result = call.getWalletService().importDid(did = req.did, key = key, alias = req.alias)
+            call.respond(result)
 
         }
     }

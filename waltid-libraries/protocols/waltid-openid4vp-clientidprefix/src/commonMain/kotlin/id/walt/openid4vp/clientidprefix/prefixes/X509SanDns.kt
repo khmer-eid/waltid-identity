@@ -1,16 +1,20 @@
+@file:OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+
 package id.walt.openid4vp.clientidprefix.prefixes
 
-import id.walt.crypto.keys.jwk.JWKKey
+import id.walt.certificate.x509.extension.SubjectAlternativeNameExtension.Companion.extensionSan
+import id.walt.certificate.x509.model.GeneralName
 import id.walt.crypto.utils.Base64Utils.decodeFromBase64
-import id.walt.crypto.utils.JwsUtils.decodeJws
+import id.walt.crypto2.jose.CompactJws
 import id.walt.openid4vp.clientidprefix.ClientIdError
+import id.walt.openid4vp.clientidprefix.ClientIdTrustConfiguration
 import id.walt.openid4vp.clientidprefix.ClientValidationResult
 import id.walt.openid4vp.clientidprefix.RequestContext
-import id.walt.openid4vp.clientidprefix.extractSanDnsNamesFromDer
-import id.walt.verifier.openid.models.authorization.ClientMetadata
 import io.github.oshai.kotlinlogging.KotlinLogging
+import io.ktor.http.*
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.jsonPrimitive
 
 /**
@@ -30,39 +34,100 @@ data class X509SanDns(val dnsName: String, override val rawValue: String) : Clie
     }
 
     suspend fun authenticateX509SanDns(clientId: X509SanDns, context: RequestContext): ClientValidationResult {
+        return authenticateX509SanDns(clientId, context, ClientIdTrustConfiguration())
+    }
+
+    suspend fun authenticateX509SanDns(
+        clientId: X509SanDns,
+        context: RequestContext,
+        trustConfiguration: ClientIdTrustConfiguration,
+    ): ClientValidationResult {
         val jws = context.requestObjectJws
             ?: return ClientValidationResult.Failure(ClientIdError.MissingRequestObject)
 
-        //return runCatching {
-        val decodedJws = runCatching { jws.decodeJws() }.getOrElse { return ClientValidationResult.Failure(ClientIdError.InvalidJws) }
-
-        val x5cHeader = decodedJws.header["x5c"]?.jsonArray
-            ?: return ClientValidationResult.Failure(ClientIdError.MissingX5cHeader)
-
-        val leafCertDer = x5cHeader.firstOrNull()?.jsonPrimitive?.content?.decodeFromBase64()
-            ?: return ClientValidationResult.Failure(ClientIdError.EmptyX5cHeader)
-
-        // 1. Verify JWS signature using the certificate's public key.
-        val key = JWKKey.importFromDerCertificate(leafCertDer).getOrThrow()
-        log.trace { "Imported key from leaf cer der for X509SanDns: $key" }
-
-        key.verifyJws(jws).getOrThrow()
-
-        // 2. Extract SANs using the isolated JCA utility function.
-        val sans = extractSanDnsNamesFromDer(leafCertDer).getOrElse {
-            return ClientValidationResult.Failure(ClientIdError.CannotExtractSanDnsNamesFromDer)
+        val decodedJws = try {
+            CompactJws.decodeUnverified(jws)
+        } catch (_: Exception) {
+            return ClientValidationResult.Failure(ClientIdError.InvalidJws)
         }
 
-        // 3. Check if the client_id's DNS name is in the SAN list.
+        val x5cHeader = decodedJws.protectedHeader["x5c"] as? JsonArray
+            ?: return ClientValidationResult.Failure(ClientIdError.MissingX5cHeader)
+        if (trustConfiguration.x509TrustAnchors == null) {
+            return ClientValidationResult.Failure(ClientIdError.MissingX509TrustAnchors)
+        }
+
+        val certificates = try {
+            x5cHeader.map { ClientIdCrypto2.parseCertificate(it.jsonPrimitive.content.decodeFromBase64()) }
+        } catch (_: Exception) {
+            return ClientValidationResult.Failure(ClientIdError.InvalidJws)
+        }
+        val leafCertificate = certificates.firstOrNull()
+            ?: return ClientValidationResult.Failure(ClientIdError.EmptyX5cHeader)
+
+        // 1. Validate the certificate path, trust anchor, validity, constraints, and client-auth usage.
+        ClientIdCrypto2.validateCertificateChain(certificates, trustConfiguration.x509TrustStore)?.let { error ->
+            return error
+        }
+
+        // 2. Verify JWS signature using the leaf certificate's public key.
+        val key = leafCertificate.restoreSubjectPublicKey(ClientIdCrypto2.runtime)
+        log.trace { "Imported key from leaf cert der for X509SanDns: $key" }
+
+        try {
+            ClientIdCrypto2.verify(jws, key)
+        } catch (cause: CancellationException) {
+            throw cause
+        } catch (_: Exception) {
+            return ClientValidationResult.Failure(ClientIdError.InvalidSignature)
+        }
+
+        // 3. Extract SANs
+        val sans = leafCertificate.data.extensionSan
+            ?.alternativeNames
+            ?.filter { it.type == GeneralName.NameType.dNSName }
+            ?.map { it.value }
+            ?: emptyList()
+
+        // 4. Check if the client_id's DNS name is in the SAN list.
         if (clientId.dnsName !in sans) {
             return ClientValidationResult.Failure(ClientIdError.SanDnsMismatch(clientId.dnsName, sans))
         }
 
-        val metadataJson = context.clientMetadataJson
+        // 5. OpenID4VP 1.0 §5.9.3, x509_san_dns: "If the Wallet can establish trust in the Client
+        // Identifier authenticated through the certificate [...] it may allow the client to freely
+        // choose the redirect_uri value. If not, the FQDN of the redirect_uri value MUST match the
+        // Client Identifier without the prefix x509_san_dns:".
+        //
+        // Deliberately scoped to redirect_uri, which is what that requirement names. A response_uri -
+        // i.e. response_mode direct_post or direct_post.jwt - is governed by §14.3.1 instead, which
+        // lets the Wallet "rely on a Client Identifier Prefix in conjunction with Client
+        // Authentication and integrity protection of the request to establish trust in the Response
+        // URI": precisely what steps 1-4 above established, by validating the chain against a
+        // configured trust anchor and verifying the request object's signature.
+        //
+        // Applying the redirect_uri rule to response_uri rejected every conformant direct_post
+        // request whose verifier receives responses on a different host than its certificate names -
+        // the ordinary deployment shape, and what the conformance suite does.
+        context.redirectUri?.let { redirectUri ->
+            val redirectUriHost = try {
+                Url(redirectUri).host
+            } catch (_: Exception) {
+                return ClientValidationResult.Failure(
+                    ClientIdError.RedirectUriHostMismatch(clientId.dnsName, redirectUri)
+                )
+            }
+            if (redirectUriHost != clientId.dnsName) {
+                return ClientValidationResult.Failure(
+                    ClientIdError.RedirectUriHostMismatch(clientId.dnsName, redirectUriHost)
+                )
+            }
+        }
+
+        val metadataJson = context.clientMetadata
             ?: return ClientValidationResult.Failure(ClientIdError.MissingClientMetadata)
 
-
-        return runCatching { ClientMetadata.fromJson(metadataJson).getOrThrow() }
+        return runCatching { metadataJson }
             .fold(
                 onSuccess = { ClientValidationResult.Success(it) },
                 onFailure = { ClientValidationResult.Failure(ClientIdError.InvalidSignature) }

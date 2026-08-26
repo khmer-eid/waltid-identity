@@ -7,32 +7,48 @@ group = "id.walt.crypto"
 
 dependencies {
     testImplementation(kotlin("test"))
-    testImplementation("org.junit.jupiter:junit-jupiter")
+    testImplementation(identityLibs.junit.jupiter.api)
 
-    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
+    testImplementation(identityLibs.kotlinx.coroutines.test)
 
     // walt.id
     api(project(":waltid-libraries:crypto:waltid-crypto"))
 
     // JSON
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
+    implementation(identityLibs.kotlinx.serialization.json)
 
     // Coroutines
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-reactor:1.10.2")
-    
+    implementation(identityLibs.kotlinx.coroutines.core)
+    implementation(identityLibs.kotlinx.coroutines.reactor)
+
     // Azure Identity (for Managed Identity authentication)
-    implementation("com.azure:azure-identity:1.19.0-beta.1")
+    // 1.19.0-beta.2 pulled Netty 4.1.130 (multiple CVEs); 1.18.3 pulls 4.1.132 (partially fixed).
+    // Remaining CVEs (netty-codec/dns/http/http2 ≥4.1.133, jackson-core ≥2.18.6) are force-pinned below.
+    implementation(identityLibs.azure.identity)
 
     // Azure Key Vault Keys (for cryptographic operations)
-    implementation("com.azure:azure-security-keyvault-keys:4.9.1")
+    implementation(identityLibs.azure.keyvault.keys)
 
     // JOSE
-    implementation("com.nimbusds:nimbus-jose-jwt:10.6")
+    implementation(identityLibs.nimbus.jose.jwt)
 
     // Hashing with SHA-2
-    implementation(project.dependencies.platform("org.kotlincrypto.hash:bom:0.6.1"))
-    implementation("org.kotlincrypto.hash:sha2")
+
+    implementation(identityLibs.kotlincrypto.hash.sha2)
+}
+
+// Force-pin vulnerable transitive dependencies brought in by azure-identity → azure-core-http-netty.
+// netty ≥4.1.133.Final fixes: CVE-2026-42583, CVE-2026-42587, CVE-2026-42579, CVE-2026-41417,
+//   CVE-2026-42585, CVE-2026-42584 (netty-codec, netty-codec-dns, netty-codec-http, netty-codec-http2)
+// jackson-core ≥2.18.6 fixes: SNYK-JAVA-COMFASTERXMLJACKSONCORE-15365924
+configurations.all {
+    resolutionStrategy.force(
+        identityLibs.netty.codec,
+        identityLibs.netty.codec.dns,
+        identityLibs.netty.codec.http,
+        identityLibs.netty.codec.http2,
+        identityLibs.jackson.core
+    )
 }
 
 tasks.withType<Test> {
@@ -45,7 +61,7 @@ tasks.test {
 }
 mavenPublishing {
     pom {
-        name.set("Walt.id Crypto Azure")
-        description.set("Walt.id Crypto Azure Key Vault Integration")
+        name.set("walt.id Crypto Azure")
+        description.set("walt.id Crypto Azure Key Vault Integration")
     }
 }

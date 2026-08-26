@@ -5,50 +5,52 @@ plugins {
 }
 
 group = "id.walt.credentials"
-
 kotlin {
-    js(IR) {
+    js {
         outputModuleName.set("w3c-credentials")
+    }
+    if (enableIosBuild) {
+        iosArm64()
+        iosSimulatorArm64()
     }
 
     sourceSets {
         commonMain.dependencies {
             // JSON
-            implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
-            implementation("io.github.optimumcode:json-schema-validator:0.4.0")
-
-            // Ktor client
-            implementation(identityLibs.bundles.waltid.ktor.client)
+            implementation(identityLibs.kotlinx.serialization.json)
+            implementation(identityLibs.optimumcode.jsonschemavalidator)
 
             // Coroutines
-            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
+            implementation(identityLibs.kotlinx.coroutines.core)
 
             // Kotlinx
-            implementation("org.jetbrains.kotlinx:kotlinx-datetime:0.7.1")
-            implementation("app.softwork:kotlinx-uuid-core:0.1.6")
+            implementation(identityLibs.kotlinx.datetime)
 
             // Logging
             implementation(identityLibs.oshai.kotlinlogging)
 
             // walt.id
             api(project(":waltid-libraries:crypto:waltid-crypto"))
+            api(project(":waltid-libraries:crypto:waltid-crypto2"))
+            api(project(":waltid-libraries:crypto:waltid-jose"))
             api(project(":waltid-libraries:sdjwt:waltid-sdjwt"))
             api(project(":waltid-libraries:waltid-did"))
+            api(project(":waltid-libraries:web:waltid-web-data-fetching"))
+            api(project(":waltid-libraries:credentials:waltid-credential-key-resolver"))
         }
         commonTest.dependencies {
             implementation(kotlin("test"))
-            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
+            implementation(identityLibs.kotlinx.coroutines.test)
+
+            // Ktor client
+            implementation(identityLibs.bundles.waltid.ktor.client)
+            implementation(identityLibs.ktor.client.cio)
         }
         jvmMain.dependencies {
-            // Ktor client
-            implementation(identityLibs.ktor.client.okhttp)
-
-            // Json canonicalization
-            implementation("io.github.erdtman:java-json-canonicalization:1.1")
         }
         jvmTest.dependencies {
-            implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
-            implementation("org.slf4j:slf4j-simple:2.0.17")
+            implementation(identityLibs.kotlinx.serialization.json)
+            implementation(identityLibs.slf4j.simple)
         }
     }
 }

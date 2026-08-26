@@ -66,9 +66,9 @@ class ClaimSdMetadataSerializationTest {
     @Test
     fun `enum as map key serializes to its SerialName`() {
         val map = mapOf(
-            ClaimSdMetadata.Always  to 1,
+            ClaimSdMetadata.Always to 1,
             ClaimSdMetadata.Allowed to 2,
-            ClaimSdMetadata.Never   to 3
+            ClaimSdMetadata.Never to 3
         )
         val s = Json.encodeToString(map)
         // Order may vary; verify by decoding back
@@ -88,7 +88,7 @@ class ClaimSdMetadataSerializationTest {
     }
 
     @Test
-    fun `decoding wrong-cased value fails (case-sensitive)`() {
+    fun `decoding wrong-cased value fails - case-sensitive`() {
         assertFailsWith<SerializationException> {
             Json.decodeFromString<ClaimSdMetadata>("\"Always\"") // capital A but not the serial name
         }

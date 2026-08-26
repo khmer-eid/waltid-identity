@@ -27,7 +27,7 @@ Learn more about OpenID4VP [here](https://docs.walt.id/concepts/data-exchange-pr
 **This library handles:**
 - Creating and managing verification sessions
 - Generating authorization requests with DCQL queries
-- Validating presentations across multiple credential formats (SD-JWT VC, W3C VC, mdoc)
+- Validating presentations across multiple credential formats (SD-JWT VC, W3C VC, mDL/mDoc ISO/IEC 18013 / 23220 family)
 - Checking DCQL fulfillment and credential set requirements
 - Session state management and lifecycle
 
@@ -72,7 +72,7 @@ The library supports multiple response delivery modes:
 The library validates presentations in multiple formats:
 - **SD-JWT VC** (`dc+sd-jwt`) - Including selective disclosure verification
 - **W3C VC** (`jwt_vc_json`) - JWT-signed Verifiable Credentials
-- **mdoc** (`mso_mdoc`) - ISO mobile documents with full chain validation
+- **mdoc** (`mso_mdoc`) - ISO/IEC 18013-7 mobile documents with full chain validation
 
 ## Assumptions and Dependencies
 
@@ -102,7 +102,7 @@ Here's a step-by-step guide to integrating the verifier library into your applic
 Create a `Verification2Session` when you need to request credentials. Define your requirements using DCQL.
 
 ```kotlin
-import id.walt.openid4vp.verifier.Verifier2Manager
+import id.walt.verifier2.Verifier2Manager
 import id.walt.dcql.models.*
 
 // 1. Define your credential requirements using DCQL
@@ -158,79 +158,19 @@ This is where the Wallet POSTs the `vp_token`. This is where validation happens 
 
 #### Step 3: Handle Presentation Submission
 
-When the Wallet POSTs the presentation, parse it and validate each credential.
+When the Wallet POSTs the presentation, the verifier parses the `vp_token`, runs the configured VP policies for each presentation format, checks DCQL fulfillment, and finally applies the configured VC policies. The built-in direct-post flow in this library delegates that work to `Verifier2VPDirectPostHandler` and `PresentationVerificationEngine`.
 
 ```kotlin
-import id.walt.openid4vp.verifier.Verifier2PresentationValidator
-import id.walt.openid4vp.verifier.Verifier2Response
-
-// Example using Ktor
 post("/api/v2/verification/{sessionId}/response") {
-    val sessionId = call.parameters["sessionId"]!!
-    val session = sessionCache.get(sessionId)
-    val params = call.receiveParameters()
+    val sessionId = call.parameters["sessionId"] ?: error("Missing sessionId")
+    val directPostRequest = call.receiveParameters()
 
-    val vpTokenString = params["vp_token"] 
-        ?: return@post call.respond(Verifier2Response.MALFORMED_VP_TOKEN)
-    val state = params["state"] 
-        ?: return@post call.respond(Verifier2Response.MISSING_STATE_PARAMETER)
-
-    // Validate state
-    if (state != session.authorizationRequest.state) {
-        return@post call.respond(Verifier2Response.INVALID_STATE_PARAMETER)
-    }
-
-    // Parse and validate presentations
-    val vpToken = Json.decodeFromString<Map<String, List<String>>>(vpTokenString)
-    val successfullyValidatedQueryIds = mutableSetOf<String>()
-    val allValidatedCredentials = mutableMapOf<String, List<DigitalCredential>>()
-
-    // Loop through each credential query
-    for ((queryId, presentations) in vpToken) {
-        val credentialQuery = session.authorizationRequest.dcqlQuery!!
-            .credentials.first { it.id == queryId }
-
-        for (presentationString in presentations) {
-            val validationResult = Verifier2PresentationValidator.validatePresentation(
-                presentationString = presentationString,
-                expectedFormat = credentialQuery.format,
-                expectedAudience = session.authorizationRequest.clientId!!,
-                expectedNonce = session.authorizationRequest.nonce!!,
-                responseUri = session.authorizationRequest.responseUri,
-                originalClaimsQuery = credentialQuery.claims
-            )
-
-            if (validationResult.isSuccess) {
-                successfullyValidatedQueryIds.add(queryId)
-                allValidatedCredentials[queryId] = validationResult.getOrThrow().credentials
-            } else {
-                // Handle validation failure
-                session.status = Verification2Session.VerificationSessionStatus.FAILED
-                sessionCache.put(session.id, session)
-                return@post call.respond(Verifier2Response.Verifier2Error.PRESENTATION_VALIDATION_FAILED)
-            }
-        }
-    }
-
-    // Check overall DCQL fulfillment (especially credential_sets)
-    val overallFulfillment = DcqlFulfillmentChecker.checkOverallDcqlFulfillment(
-        dcqlQuery = session.authorizationRequest.dcqlQuery!!,
-        successfullyValidatedQueryIds = successfullyValidatedQueryIds
+    val result = verifier2VPDirectPostHandler.handleDirectPost(
+        sessionId = sessionId,
+        requestParams = directPostRequest,
     )
 
-    if (!overallFulfillment) {
-        session.status = Verification2Session.VerificationSessionStatus.FAILED
-        sessionCache.put(session.id, session)
-        return@post call.respond(Verifier2Response.Verifier2Error.REQUIRED_CREDENTIALS_NOT_PROVIDED)
-    }
-
-    // Verification successful!
-    session.status = Verification2Session.VerificationSessionStatus.SUCCESSFUL
-    session.presentedCredentials = allValidatedCredentials
-    sessionCache.put(session.id, session)
-
-    // Use validated credentials for your business logic
-    call.respond(HttpStatusCode.OK, mapOf("status" to "success"))
+    call.respond(result.httpStatusCode, result.body)
 }
 ```
 
@@ -240,7 +180,8 @@ post("/api/v2/verification/{sessionId}/response") {
 |-----------|-------------|-------|
 | `Verifier2Manager` | Main entry point for creating verification sessions | `Verifier2Manager.createVerificationSession()` |
 | `Verification2Session` | State object for a verification flow | Store and retrieve by session ID |
-| `Verifier2PresentationValidator` | Validates presentations in various formats | `validatePresentation()` |
+| `Verifier2VPDirectPostHandler` | Parses direct-post responses and drives verifier session processing | `handleDirectPost()` |
+| `PresentationVerificationEngine` | Parses presentations, runs VP policies, checks DCQL, and validates credentials | `executeAllVerification()` |
 | `DcqlFulfillmentChecker` | Checks if presentations satisfy DCQL requirements | `checkOverallDcqlFulfillment()` |
 
 ### Supported Credential Formats

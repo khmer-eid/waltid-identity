@@ -1,4 +1,3 @@
-@file:OptIn(ExperimentalUuidApi::class)
 
 import id.walt.commons.testing.E2ETest
 import id.walt.crypto.keys.KeyGenerationRequest
@@ -22,10 +21,8 @@ import io.ktor.server.util.*
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.Assertions.assertTrue
-import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
-@OptIn(ExperimentalUuidApi::class)
 
 class PresentationDefinitionPolicyTests(private val e2e: E2ETest) {
 
@@ -542,7 +539,7 @@ class PresentationDefinitionPolicyTests(private val e2e: E2ETest) {
 
     private object PresentationRequests {
 
-        val universityDegreeW3CVcTypeCorrectJsonPath = """
+        val universityDegreeW3CVcTypeCorrectJsonPath = $$"""
         {
           "vp_policies": [
             "signature",
@@ -564,7 +561,7 @@ class PresentationDefinitionPolicyTests(private val e2e: E2ETest) {
                   "fields": [
                     {
                       "path": [
-                        "${'$'}.vc.type"
+                        "$.vc.type"
                       ],
                       "filter": {
                         "type": "string",
@@ -579,7 +576,7 @@ class PresentationDefinitionPolicyTests(private val e2e: E2ETest) {
         }
     """.trimIndent()
 
-        val universityDegreeW3CVcTypeInvalidJsonPath = """
+        val universityDegreeW3CVcTypeInvalidJsonPath = $$"""
         {
           "vp_policies": [
             "signature",
@@ -601,7 +598,7 @@ class PresentationDefinitionPolicyTests(private val e2e: E2ETest) {
                   "fields": [
                     {
                       "path": [
-                        "${'$'}.type"
+                        "$.type"
                       ],
                       "filter": {
                         "type": "string",
@@ -652,7 +649,7 @@ class PresentationDefinitionPolicyTests(private val e2e: E2ETest) {
         }
     """.trimIndent()
 
-        val universityDegreeCredentialSubjectDegreeTypeCorrectJsonPath = """
+        val universityDegreeCredentialSubjectDegreeTypeCorrectJsonPath = $$"""
         {
           "vp_policies": [
             "signature",
@@ -674,7 +671,7 @@ class PresentationDefinitionPolicyTests(private val e2e: E2ETest) {
                   "fields": [
                     {
                       "path": [
-                        "${'$'}.vc.type"
+                        "$.vc.type"
                       ],
                       "filter": {
                         "type": "string",
@@ -683,7 +680,7 @@ class PresentationDefinitionPolicyTests(private val e2e: E2ETest) {
                     },                  
                     {
                       "path": [
-                        "${'$'}.vc.credentialSubject.degree.type"
+                        "$.vc.credentialSubject.degree.type"
                       ],
                       "filter": {
                         "type": "string",
@@ -699,7 +696,7 @@ class PresentationDefinitionPolicyTests(private val e2e: E2ETest) {
     """.trimIndent()
 
         fun getUniversityDegreeWithSubjectDegreeTypeValue(subjectDegreeType: String = "BachelorDegree") =
-            """
+            $$"""
         {
           "vp_policies": [
             "signature",
@@ -721,7 +718,7 @@ class PresentationDefinitionPolicyTests(private val e2e: E2ETest) {
                   "fields": [
                     {
                       "path": [
-                        "${'$'}.vc.type"
+                        "$.vc.type"
                       ],
                       "filter": {
                         "type": "string",
@@ -730,11 +727,11 @@ class PresentationDefinitionPolicyTests(private val e2e: E2ETest) {
                     },                  
                     {
                       "path": [
-                        "${'$'}.vc.credentialSubject.degree.type"
+                        "$.vc.credentialSubject.degree.type"
                       ],
                       "filter": {
                         "type": "string",
-                        "pattern": "$subjectDegreeType"
+                        "pattern": "$$subjectDegreeType"
                       }
                     }
                   ]
@@ -747,7 +744,7 @@ class PresentationDefinitionPolicyTests(private val e2e: E2ETest) {
 
         fun getIdentityCredentialWithTwoInputDescriptors(
             isOver65: Boolean = true,
-        ) = """
+        ) = $$"""
             {
               "request_credentials": [
                 {
@@ -761,7 +758,7 @@ class PresentationDefinitionPolicyTests(private val e2e: E2ETest) {
                       "fields": [
                         {
                           "path": [
-                            "${'$'}.vct"
+                            "$.vct"
                           ],
                           "filter": {
                             "type": "string",
@@ -783,10 +780,10 @@ class PresentationDefinitionPolicyTests(private val e2e: E2ETest) {
                       "fields": [
                         {
                           "path": [
-                            "${'$'}.is_over_65"
+                            "$.is_over_65"
                           ],
                           "filter": {
-                            "const": $isOver65
+                            "const": $$isOver65
                           }
                         }
                       ]
@@ -802,7 +799,7 @@ class PresentationDefinitionPolicyTests(private val e2e: E2ETest) {
 
         fun getUniversityDegreePda1ToSeparateInputDescriptors(
             sex: String = "01",
-        ) = """
+        ) = $$"""
             {
               "vp_policies": [
                 "signature",
@@ -824,7 +821,7 @@ class PresentationDefinitionPolicyTests(private val e2e: E2ETest) {
                       "fields": [
                         {
                           "path": [
-                            "${'$'}.vc.credentialSubject.degree.type"
+                            "$.vc.credentialSubject.degree.type"
                           ],
                           "filter": {
                             "type": "string",
@@ -843,7 +840,7 @@ class PresentationDefinitionPolicyTests(private val e2e: E2ETest) {
                       "fields": [
                         {
                           "path": [
-                            "${'$'}.vc.type"
+                            "$.vc.type"
                           ],
                           "filter": {
                             "type": "string",
@@ -852,11 +849,11 @@ class PresentationDefinitionPolicyTests(private val e2e: E2ETest) {
                         },
                         {
                           "path": [
-                            "${'$'}.vc.credentialSubject.section1.sex"
+                            "$.vc.credentialSubject.section1.sex"
                           ],
                           "filter": {
                             "type": "string",
-                            "pattern": "$sex"
+                            "pattern": "$$sex"
                           }
                         }
                       ]
@@ -1328,10 +1325,10 @@ class PresentationDefinitionPolicyTests(private val e2e: E2ETest) {
           },
           "authenticationMethod": "PRE_AUTHORIZED",
           "x5Chain": [
-            "-----BEGIN CERTIFICATE-----\nMIIBeTCCAR8CFHrWgrGl5KdefSvRQhR+aoqdf48+MAoGCCqGSM49BAMCMBcxFTATBgNVBAMMDE1ET0MgUk9PVCBDQTAgFw0yNTA1MTQxNDA4MDlaGA8yMDc1MDUwMjE0MDgwOVowZTELMAkGA1UEBhMCQVQxDzANBgNVBAgMBlZpZW5uYTEPMA0GA1UEBwwGVmllbm5hMRAwDgYDVQQKDAd3YWx0LmlkMRAwDgYDVQQLDAd3YWx0LmlkMRAwDgYDVQQDDAd3YWx0LmlzMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEG0RINBiF+oQUD3d5DGnegQuXenI29JDaMGoMvioKRBN53d4UazakS2unu8BnsEtxutS2kqRhYBPYk9RAriU3gTAKBggqhkjOPQQDAgNIADBFAiAOMwM7hH7q9Di+mT6qCi4LvB+kH8OxMheIrZ2eRPxtDQIhALHzTxwvN8Udt0Z2Cpo8JBihqacfeXkIxVAO8XkxmXhB\n-----END CERTIFICATE-----"
+            "-----BEGIN CERTIFICATE-----\nMIICETCCAbegAwIBAgIUMJAkGLbeyDnDaACHF2MwwUs/j1kwCgYIKoZIzj0EAwIwJDEVMBMGA1UEAwwMV2FsdCBJRCBSb290MQswCQYDVQQGEwJBVDAeFw0yNjA4MTAxMjUyNDdaFw0yNzExMTAxMjUyNDdaMCYxFzAVBgNVBAMMDldhbHQgSUQgbURMIERTMQswCQYDVQQGEwJBVDBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABBtESDQYhfqEFA93eQxp3oELl3pyNvSQ2jBqDL4qCkQTed3eFGs2pEtrp7vAZ7BLcbrUtpKkYWAT2JPUQK4lN4GjgcQwgcEwHQYDVR0OBBYEFLm7A+B7z8CQmFznE976TVpzBwXaMA4GA1UdDwEB/wQEAwIHgDAVBgNVHSUBAf8ECzAJBgcogYxdBQECMCoGA1UdEgQjMCGBDm9mZmljZUB3YWx0Lmlkhg9odHRwczovL3dhbHQuaWQwLAYDVR0fBCUwIzAhoB+gHYYbaHR0cHM6Ly9jcmwud2FsdC5pZC9jcmwuZGVyMB8GA1UdIwQYMBaAFLm7A+B7z8CQmFznE976TVpzBwXaMAoGCCqGSM49BAMCA0gAMEUCIQD44E8Mukk3WwFeHbB6RZZPy85lVEyNqFZs6aNLq2kq4QIgXrURrzy1iLEYmsnna6YYhRrvGaYEjk1GqCn2w+skfmw=\n-----END CERTIFICATE-----"
           ],
           "trustedRootCAs": [
-            "-----BEGIN CERTIFICATE-----\nMIIBZTCCAQugAwIBAgII2x50/ui7K2wwCgYIKoZIzj0EAwIwFzEVMBMGA1UEAwwMTURPQyBST09UIENBMCAXDTI1MDUxNDE0MDI1M1oYDzIwNzUwNTAyMTQwMjUzWjAXMRUwEwYDVQQDDAxNRE9DIFJPT1QgQ0EwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARY/Swb4KSMi1n0p8zewsX6ssZvwdgJ+eWwgf81YmOJeRPHnuvIMth9NTpBdi6RUodKrowR5u9A+pMlPVuVn/F4oz8wPTAMBgNVHRMBAf8EAjAAMA4GA1UdDwEB/wQEAwIBBjAdBgNVHQ4EFgQUxaGwGuK+ZbdzYNqADTyJ/gqLRwkwCgYIKoZIzj0EAwIDSAAwRQIhAOEYhbDYF/1kgDgy4anwZfoULmwt4vt08U6EU2AjXI09AiACCM7m3FnO7bc+xYQRT+WBkZXe/Om4bVmlIK+av+SkCA==\n-----END CERTIFICATE-----\n"
+            "-----BEGIN CERTIFICATE-----\nMIIB3jCCAYSgAwIBAgIULu5VAXkCuF+V/BRXZhLfwUSsiqwwCgYIKoZIzj0EAwIwJDEVMBMGA1UEAwwMV2FsdCBJRCBSb290MQswCQYDVQQGEwJBVDAeFw0yNjA4MTAxMjUyNDdaFw00NjA4MDUxMjUyNDdaMCQxFTATBgNVBAMMDFdhbHQgSUQgUm9vdDELMAkGA1UEBhMCQVQwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQbREg0GIX6hBQPd3kMad6BC5d6cjb0kNowagy+KgpEE3nd3hRrNqRLa6e7wGewS3G61LaSpGFgE9iT1ECuJTeBo4GTMIGQMBIGA1UdEwEB/wQIMAYBAf8CAQAwDgYDVR0PAQH/BAQDAgEGMB0GA1UdDgQWBBS5uwPge8/AkJhc5xPe+k1acwcF2jAqBgNVHRIEIzAhgQ5vZmZpY2VAd2FsdC5pZIYPaHR0cHM6Ly93YWx0LmlkMB8GA1UdIwQYMBaAFLm7A+B7z8CQmFznE976TVpzBwXaMAoGCCqGSM49BAMCA0gAMEUCIEpLzmKtA1bv/80hXVEJ3eIiS14KNHCfiXkUQxMKjNnuAiEA7JTFpHHYXi2zPTNovOXNP7mov8llZkgbKZwbkEn4fkc=\n-----END CERTIFICATE-----\n"
           ]
         }
     """.trimIndent()

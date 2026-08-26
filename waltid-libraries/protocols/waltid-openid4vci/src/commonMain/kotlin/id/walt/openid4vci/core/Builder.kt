@@ -1,9 +1,18 @@
 package id.walt.openid4vci.core
 
-import id.walt.openid4vci.granttypehandlers.AuthorizationCodeAuthorizeHandler
-import id.walt.openid4vci.granttypehandlers.AuthorizationCodeTokenHandler
-import id.walt.openid4vci.granttypehandlers.PreAuthorizedCodeTokenHandler
+import id.walt.openid4vci.handlers.credential.SdJwtVcCredentialHandler
+import id.walt.openid4vci.handlers.credential.MdocCredentialHandler
+import id.walt.openid4vci.handlers.credential.W3cJwtVcCredentialHandler
+import id.walt.openid4vci.handlers.granttypes.authorizationcode.AuthorizationCodeAuthorizationEndpoint
+import id.walt.openid4vci.handlers.granttypes.authorizationcode.AuthorizationCodeTokenEndpoint
+import id.walt.openid4vci.handlers.granttypes.preauthorizedcode.PreAuthorizedCodeTokenEndpoint
+import id.walt.openid4vci.handlers.par.PushedAuthorizationRequestEndpointHandler
+import id.walt.openid4vci.handlers.granttypes.refreshtoken.RefreshTokenTokenEndpoint
 import id.walt.openid4vci.GrantType
+import id.walt.openid4vci.CredentialFormat
+import id.walt.openid4vci.clientauth.ClientAuthenticationEndpoint
+import id.walt.openid4vci.clientauth.ClientAuthenticationMethods
+import id.walt.openid4vci.validation.DefaultAuthorizationRequestValidator
 
 /**
  * Entry point for consumers to obtain the OAuth provider.
@@ -35,55 +44,190 @@ import id.walt.openid4vci.GrantType
  *   factory/strategy bundles, these arguments can become some kind of wrappers.
  * - `includeAuthorizationCodeDefaultHandlers` / `includePreAuthorizedCodeDefaultHandlers` give flags for
  *   composing providers (handy for tests) until the handler factory story evolves, needs revisited.
+ * - Credential handlers are registered with defaults for SD-JWT VC formats unless disabled. In a future major
+ *   release we may drop these defaults and require explicit handler registration for credential formats.
  */
 fun buildOAuth2Provider(
     config: OAuth2ProviderConfig,
-//    extraTokenEndpointHandlers: List<Pair<GrantType, TokenEndpointHandler>> = emptyList(),
-//    extraAuthorizeHandlers: List<AuthorizeEndpointHandler> = emptyList(),
     includeAuthorizationCodeDefaultHandlers: Boolean = true,
     includePreAuthorizedCodeDefaultHandlers: Boolean = true,
+    includeRefreshTokenDefaultHandlers: Boolean = true,
+    includePushedAuthorizationDefaultHandlers: Boolean = true,
+    includeCredentialDefaultHandlers: Boolean = true,
+    includeClientAttestationDefaultMethod: Boolean = true,
 ): OAuth2Provider {
-    registerDefaultHandlers(
-        config = config,
+    val resolvedConfig = applyIssuerStateValidator(config)
+    registerDefaultGrantTypeHandlers(
+        config = resolvedConfig,
         includeAuthorizationCodeDefaultHandlers = includeAuthorizationCodeDefaultHandlers,
         includePreAuthorizedCodeDefaultHandlers = includePreAuthorizedCodeDefaultHandlers,
+        includeRefreshTokenDefaultHandlers = includeRefreshTokenDefaultHandlers,
     )
-//    extraTokenEndpointHandlers.forEach { (grantType, handler) ->
-//        config.tokenEndpointHandlers.appendForGrant(grantType, handler)
-//    }
-//    extraAuthorizeHandlers.forEach { config.authorizeEndpointHandlers.append(it) }
-    return DefaultOAuth2Provider(config)
+    registerDefaultPushedAuthorizationHandlers(
+        config = resolvedConfig,
+        includePushedAuthorizationDefaultHandlers = includePushedAuthorizationDefaultHandlers,
+    )
+    registerDefaultCredentialHandlers(
+        config = resolvedConfig,
+        includeCredentialDefaultHandlers = includeCredentialDefaultHandlers,
+    )
+    val clientAuthConfig = registerDefaultClientAuthenticationMethods(
+        config = resolvedConfig,
+        includeClientAttestationDefaultMethod = includeClientAttestationDefaultMethod,
+    )
+    return DefaultOAuth2Provider(clientAuthConfig)
 }
 
-private fun registerDefaultHandlers(
+private fun applyIssuerStateValidator(config: OAuth2ProviderConfig): OAuth2ProviderConfig =
+    if (
+        config.issuerStateValidator != null &&
+        config.authorizationRequestValidator is DefaultAuthorizationRequestValidator
+    ) {
+        config.copy(
+            authorizationRequestValidator = DefaultAuthorizationRequestValidator(
+                issuerStateValidator = config.issuerStateValidator,
+            ),
+        )
+    } else {
+        config
+    }
+
+private fun registerDefaultGrantTypeHandlers(
     config: OAuth2ProviderConfig,
     includeAuthorizationCodeDefaultHandlers: Boolean,
     includePreAuthorizedCodeDefaultHandlers: Boolean,
+    includeRefreshTokenDefaultHandlers: Boolean,
 ) {
     if (includeAuthorizationCodeDefaultHandlers) {
-        val authorizeEndpointHandler = AuthorizationCodeAuthorizeHandler(
+        val authorizationCodeAuthorizationEndpointHandler = AuthorizationCodeAuthorizationEndpoint(
             codeRepository = config.authorizationCodeRepository,
         )
-        config.authorizeEndpointHandlers.append(authorizeEndpointHandler)
+        config.authorizationEndpointHandlers.append(authorizationCodeAuthorizationEndpointHandler)
 
-        val authorizeTokenHandler = AuthorizationCodeTokenHandler(
+        val authorizationCodeTokenEndpointHandler = AuthorizationCodeTokenEndpoint(
             codeRepository = config.authorizationCodeRepository,
-            tokenService = config.tokenService,
+            accessTokenIssuer = config.accessTokenIssuer,
+            refreshTokenRepository = config.refreshTokenRepository,
+            refreshTokenIssuer = config.refreshTokenIssuer,
         )
+
         config.tokenEndpointHandlers.appendForGrant(
             grantType = GrantType.AuthorizationCode,
-            handler = authorizeTokenHandler,
+            handler = authorizationCodeTokenEndpointHandler,
         )
     }
 
     if (includePreAuthorizedCodeDefaultHandlers) {
-        val preAuthorizedTokenHandler = PreAuthorizedCodeTokenHandler(
+        val preAuthorizedTokenHandler = PreAuthorizedCodeTokenEndpoint(
             codeRepository = config.preAuthorizedCodeRepository,
-            tokenService = config.tokenService,
+            accessTokenIssuer = config.accessTokenIssuer,
+            refreshTokenRepository = config.refreshTokenRepository,
+            refreshTokenIssuer = config.refreshTokenIssuer,
         )
         config.tokenEndpointHandlers.appendForGrant(
             grantType = GrantType.PreAuthorizedCode,
             handler = preAuthorizedTokenHandler,
         )
     }
+
+    if (includeRefreshTokenDefaultHandlers) {
+        val refreshTokenHandler = RefreshTokenTokenEndpoint(
+            refreshTokenRepository = config.refreshTokenRepository,
+            accessTokenIssuer = config.accessTokenIssuer,
+            refreshTokenIssuer = config.refreshTokenIssuer,
+            refreshTokenVerifier = config.refreshTokenVerifier,
+        )
+        config.tokenEndpointHandlers.appendForGrant(
+            grantType = GrantType.RefreshToken,
+            handler = refreshTokenHandler,
+        )
+    }
+}
+
+private fun registerDefaultPushedAuthorizationHandlers(
+    config: OAuth2ProviderConfig,
+    includePushedAuthorizationDefaultHandlers: Boolean,
+) {
+    val pushedAuthorizationConfig = config.pushedAuthorizationConfig
+    check(pushedAuthorizationConfig != null || config.pushedAuthorizationEndpointHandlers.count() == 0) {
+        "PAR endpoint handlers require pushedAuthorizationConfig"
+    }
+
+    if (pushedAuthorizationConfig == null) return
+
+    if (includePushedAuthorizationDefaultHandlers) {
+        config.pushedAuthorizationEndpointHandlers.append(
+            PushedAuthorizationRequestEndpointHandler(
+                parRepository = pushedAuthorizationConfig.repository,
+                requestUriPrefix = pushedAuthorizationConfig.requestUriPrefix,
+                requestLifetimeSeconds = pushedAuthorizationConfig.lifetimeSeconds,
+            )
+        )
+    }
+
+    check(config.pushedAuthorizationEndpointHandlers.count() > 0) {
+        "PAR is configured but no pushed authorization endpoint handler is registered"
+    }
+}
+
+private fun registerDefaultCredentialHandlers(
+    config: OAuth2ProviderConfig,
+    includeCredentialDefaultHandlers: Boolean,
+) {
+    if (!includeCredentialDefaultHandlers) return
+    val sdJwtVcFormat = CredentialFormat.SD_JWT_VC
+    if (config.credentialEndpointHandlers.get(sdJwtVcFormat) == null) {
+        config.credentialEndpointHandlers.register(sdJwtVcFormat, SdJwtVcCredentialHandler())
+    }
+
+    val jwtVcJsonFormat = CredentialFormat.JWT_VC_JSON
+    if (config.credentialEndpointHandlers.get(jwtVcJsonFormat) == null) {
+        config.credentialEndpointHandlers.register(jwtVcJsonFormat, W3cJwtVcCredentialHandler())
+    }
+
+    val jwtVcFormat = CredentialFormat.JWT_VC
+    if (config.credentialEndpointHandlers.get(jwtVcFormat) == null) {
+        config.credentialEndpointHandlers.register(jwtVcFormat, W3cJwtVcCredentialHandler())
+    }
+
+    val mdocFormat = CredentialFormat.MSO_MDOC
+    if (config.credentialEndpointHandlers.get(mdocFormat) == null) {
+        config.credentialEndpointHandlers.register(mdocFormat, MdocCredentialHandler())
+    }
+}
+
+private fun registerDefaultClientAuthenticationMethods(
+    config: OAuth2ProviderConfig,
+    includeClientAttestationDefaultMethod: Boolean,
+): OAuth2ProviderConfig {
+    if (config.clientAuthenticationServiceResolver != null) {
+        return config
+    }
+
+    val clientAttestationConfig = config.clientAttestationConfig
+    if (!includeClientAttestationDefaultMethod || clientAttestationConfig == null) {
+        return config
+    }
+
+    val serviceConfig = config.clientAuthenticationServiceConfig
+    val hasAttestationMethod = serviceConfig.methods
+        .any { it.name == ClientAuthenticationMethods.ATTEST_JWT_CLIENT_AUTH }
+    val serviceConfigWithMethod =
+        if (hasAttestationMethod) {
+            serviceConfig
+        } else {
+            serviceConfig.withMethod(clientAttestationConfig.toAuthenticationMethod())
+        }
+
+    val supportedMethods = serviceConfigWithMethod.methods.map { it.name }.toSet()
+    val serviceConfigWithEndpointDefaults = serviceConfigWithMethod.withDefaultMethodsByEndpoint(
+        mapOf(
+            ClientAuthenticationEndpoint.PUSHED_AUTHORIZATION to supportedMethods,
+            ClientAuthenticationEndpoint.TOKEN to supportedMethods,
+        ),
+    )
+
+    return config.copy(
+        clientAuthenticationServiceConfig = serviceConfigWithEndpointDefaults,
+    )
 }

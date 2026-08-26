@@ -1,0 +1,100 @@
+package id.walt.verifier2.handlers.vpresponse
+
+import id.walt.credentials.formats.DigitalCredential
+import id.walt.policies2.vc.CredentialPolicyResult
+import id.walt.policies2.vc.policies.PolicyExecutionContext
+import id.walt.verifier2.data.Verification2Session
+import io.github.oshai.kotlinlogging.KotlinLogging
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+
+object Verifier2SessionCredentialPolicyValidation {
+
+    private val log = KotlinLogging.logger {}
+
+    @Serializable
+    data class CredentialPolicyResults(
+        @SerialName("vc_policies")
+        val vcPolicies: List<CredentialPolicyResult>,
+
+        @SerialName("specific_vc_policies")
+        val specificVcPolicies: Map<String, List<CredentialPolicyResult>>
+    )
+
+    suspend fun validateCredentialPolicies(
+        policies: Verification2Session.DefinedVerificationPolicies,
+        validatedCredentials: Map<String, List<DigitalCredential>>,
+        context: PolicyExecutionContext = PolicyExecutionContext.Empty
+    ): CredentialPolicyResults = coroutineScope {
+
+        // --- General VC Policies ---
+        val generalPolicyJobs = validatedCredentials.flatMap { (queryId, credentials) ->
+            credentials.flatMapIndexed { credentialIndex, credential ->
+                policies.vc_policies?.policies.orEmpty().map { policy ->
+                    async(Dispatchers.Default) {
+                        log.trace { "Validating '$queryId' credential#$credentialIndex with policy '${policy.id}': $credential" }
+                        val result = runCatching { policy.verify(credential, context) }
+                            .getOrElse { ex ->
+                                log.warn { "Policy '${policy.id}' threw an unexpected exception for '$queryId' credential#$credentialIndex: ${ex.message}" }
+                                Result.failure(ex)
+                            }
+                        log.trace { "'$queryId' credential#$credentialIndex '${policy.id}' result: $result" }
+
+                        CredentialPolicyResult(
+                            policy = policy,
+                            success = result.isSuccess,
+                            result = result.getOrNull(),
+                            error = result.exceptionOrNull()?.message,
+                            queryId = queryId,
+                            credentialIndex = credentialIndex,
+                        )
+                    }
+                }
+            }
+        }
+
+        // --- Specific VC Policies ---
+        val specificPolicyJobs = policies.specific_vc_policies.orEmpty().flatMap { (queryId, queryPolicies) ->
+            val credentials = validatedCredentials[queryId].orEmpty()
+
+            credentials.flatMapIndexed { credentialIndex, specificCredential ->
+                queryPolicies.policies.map { policy ->
+                    async(Dispatchers.Default) {
+                        val result = runCatching { policy.verify(specificCredential, context) }
+                            .getOrElse { ex ->
+                                log.warn { "Specific policy '${policy.id}' threw an unexpected exception for '$queryId' credential#$credentialIndex: ${ex.message}" }
+                                Result.failure(ex)
+                            }
+
+                        queryId to CredentialPolicyResult(
+                            policy = policy,
+                            success = result.isSuccess,
+                            result = result.getOrNull(),
+                            error = result.exceptionOrNull()?.message,
+                            queryId = queryId,
+                            credentialIndex = credentialIndex,
+                        )
+                    }
+                }
+            }
+        }
+
+        // --- Await all policy runs ---
+        // Wait for all to finish
+        val vcPolicyResults = generalPolicyJobs.awaitAll()
+        val specificPolicyPairs = specificPolicyJobs.awaitAll()
+
+        // Group the specific results back into a Map<String, List<PolicyResult>>
+        val specificVcPolicyResults = specificPolicyPairs
+            .groupBy({ it.first }, { it.second })
+
+        return@coroutineScope CredentialPolicyResults(
+            vcPolicies = ArrayList(vcPolicyResults),
+            specificVcPolicies = specificVcPolicyResults
+        )
+    }
+}

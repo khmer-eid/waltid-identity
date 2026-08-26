@@ -2,7 +2,6 @@ package id.walt.sdjwt
 
 import id.walt.sdjwt.utils.SdjwtStringUtils.decodeFromBase64Url
 import kotlinx.serialization.json.*
-import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.js.ExperimentalJsExport
 import kotlin.js.JsExport
 import kotlin.js.JsName
@@ -231,12 +230,15 @@ open class SDJwt internal constructor(
         /**
          * Parse SD-JWT from a token string
          */
-        @OptIn(ExperimentalEncodingApi::class)
         fun parse(sdJwt: String): SDJwt {
             val matchResult = Regex(SD_JWT_PATTERN).matchEntire(sdJwt)
                 ?: throw IllegalArgumentException("Invalid SD-JWT format: $sdJwt")
             val matchedGroups = matchResult.groups as MatchNamedGroupCollection
-            val disclosures = matchedGroups["disclosures"]?.value?.trim(SEPARATOR)?.split(SEPARATOR)?.toSet() ?: setOf()
+            val disclosures = matchedGroups["disclosures"]?.value?.trim(SEPARATOR)?.split(SEPARATOR) ?: emptyList()
+            val uniqueDisclosures = disclosures.toSet()
+            if (uniqueDisclosures.size != disclosures.size) {
+                throw SDJwtVerificationException("Duplicate disclosure in tilde chain")
+            }
 
             return SDJwt(
                 jwt = matchedGroups["sdjwt"]!!.value,
@@ -245,7 +247,7 @@ open class SDJwt internal constructor(
                 ).jsonObject,
                 sdPayload = SDPayload.parse(
                     jwtBody = matchedGroups["body"]!!.value,
-                    disclosures = disclosures
+                    disclosures = uniqueDisclosures
                 ),
                 keyBindingJwt = matchedGroups["kbjwt"]?.value?.let { KeyBindingJwt.parse(it) },
                 isPresentation = matchedGroups["kbjwt"] != null || sdJwt.endsWith("~")
@@ -297,6 +299,8 @@ open class SDJwt internal constructor(
          * @param sdPayload Payload with selective disclosures to be signed
          * @param jwtCryptoProvider JWT Crypto Provider implementation that supports JWT creation on the target platform
          * @param keyID Optional key ID, if the crypto provider implementation requires it
+         * @param typ JWT `typ` header value to include in the protected header
+         * @param additionalHeaders Additional protected header values to include in the signed JWT
          * @return  The signed SDJwt object
          */
         fun sign(
@@ -316,11 +320,10 @@ open class SDJwt internal constructor(
         )
 
         /**
-         * Sign the given payload as SD-JWT token, using the given JWT crypto provider, optionally with the specified key ID and holder binding
+         * Sign the given payload as SD-JWT token, using the given JWT crypto provider, optionally with the specified key ID
          * @param sdPayload Payload with selective disclosures to be signed
          * @param jwtCryptoProvider JWT Crypto Provider implementation that supports JWT creation on the target platform
          * @param keyID Optional key ID, if the crypto provider implementation requires it
-         * @param withKBJwt Optionally, append the given holder binding JWT to the signed SD-JWT token
          * @return  The signed SDJwt object
          */
         @JsExport.Ignore

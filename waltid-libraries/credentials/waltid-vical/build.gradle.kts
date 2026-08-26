@@ -1,5 +1,4 @@
 @file:OptIn(ExperimentalKotlinGradlePluginApi::class)
-
 import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
 
 plugins {
@@ -11,42 +10,44 @@ plugins {
 group = "id.walt.credentials"
 
 kotlin {
-    js(IR) {
+    js {
         outputModuleName = "vical"
     }
 
     sourceSets {
         commonMain.dependencies {
             implementation(identityLibs.kotlinx.serialization.json)
+            implementation(identityLibs.kotlinx.serialization.cbor)
             implementation(identityLibs.kotlinx.coroutines.core)
 
-            // CBOR
-            implementation("org.jetbrains.kotlinx:kotlinx-serialization-cbor:1.9.0")
-            implementation("org.jetbrains.kotlinx:kotlinx-datetime:0.7.1")
+            implementation(identityLibs.kotlinx.datetime)
 
             // walt.id
             implementation(project(":waltid-libraries:crypto:waltid-crypto"))
             implementation(project(":waltid-libraries:crypto:waltid-cose"))
+            implementation(project(":waltid-libraries:crypto:waltid-crypto2"))
+            implementation(project(":waltid-libraries:crypto:waltid-jose"))
+            implementation(project(":waltid-libraries:crypto:waltid-x509"))
         }
         commonTest.dependencies {
             implementation(kotlin("test-common"))
             implementation(kotlin("test-annotations-common"))
-            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
+            implementation(identityLibs.kotlinx.coroutines.test)
 
-            implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
+            implementation(identityLibs.kotlinx.serialization.json)
         }
         jvmMain.dependencies {
 
         }
         jvmTest.dependencies {
             // Logging
-            implementation("org.slf4j:slf4j-simple:2.0.17")
+            implementation(identityLibs.slf4j.simple)
 
             // Test
             implementation(kotlin("test"))
 
-            implementation("org.junit.jupiter:junit-jupiter-api:5.11.4")
-            implementation("org.junit.jupiter:junit-jupiter-params:5.11.4")
+            implementation(identityLibs.junit.jupiter.api)
+            implementation(identityLibs.junit.jupiter.params)
         }
         jsMain.dependencies {
 

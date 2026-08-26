@@ -1,11 +1,11 @@
 package id.walt.mdoc.objects.mso
 
+import id.walt.mdoc.encoding.MdocTDateInstantSerializer
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.cbor.ValueTags
 import kotlin.time.Clock
-import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
 
 /**
@@ -31,28 +31,36 @@ import kotlin.time.Instant
  * recommends that issuing authorities reduce their precision (e.g., by setting hour/minute/second values
  * consistently across all provisioned mdocs).
  */
-@OptIn(ExperimentalUnsignedTypes::class, ExperimentalTime::class, ExperimentalSerializationApi::class)
+@OptIn(ExperimentalUnsignedTypes::class, ExperimentalSerializationApi::class)
 @Serializable
 data class ValidityInfo(
     @SerialName("signed")
     @ValueTags(0u) // CBOR tag 0 for standard date-time string (tdate)
+    @Serializable(with = MdocTDateInstantSerializer::class)
     val signed: Instant,
 
     @SerialName("validFrom")
     @ValueTags(0u)
+    @Serializable(with = MdocTDateInstantSerializer::class)
     val validFrom: Instant,
 
     @SerialName("validUntil")
     @ValueTags(0u)
+    @Serializable(with = MdocTDateInstantSerializer::class)
     val validUntil: Instant,
 
     @SerialName("expectedUpdate")
     @ValueTags(0u)
+    @Serializable(with = MdocTDateInstantSerializer::class)
     val expectedUpdate: Instant? = null
 ) {
     fun validate() {
         val now = Clock.System.now()
-        require(validFrom <= now) { "MSO is not yet valid" }
-        require(validUntil >= now) { "MSO is no longer valid" }
+        require(validFrom <= now) { "MSO is not yet valid (becomes valid in ${validFrom - now})" }
+        require(validUntil >= now) { "MSO is no longer valid (expired ${now - validFrom} ago)" }
+    }
+
+    fun precheck() {
+        require(validUntil >= validFrom) { "validFrom cannot be lower than validUntil" }
     }
 }

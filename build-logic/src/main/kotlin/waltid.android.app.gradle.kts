@@ -1,45 +1,28 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
-    id("waltid.android.base")
-
     id("com.android.application")
     kotlin("plugin.compose")
 }
 
-// Access the version catalog
-val catalogs = extensions.getByType<VersionCatalogsExtension>()
-val identityLibs = catalogs.named("identityLibs")
-val javaVersion = identityLibs.findVersion("java-library").get().requiredVersion.toInt()
+android {
+    namespace = project.group.toString()
 
-// Configure KMP to have an Android Target
-kotlin {
-    androidTarget {
-        publishLibraryVariants("release")
-
-        compilations.all {
-            compileTaskProvider.configure {
-                compilerOptions {
-                    jvmTarget.set(JvmTarget.fromTarget(javaVersion.toString()))
-                }
-            }
+    compileSdk = BuildConstants.COMPILE_SDK
+    defaultConfig { minSdk = BuildConstants.MIN_SDK }
+    compileOptions {
+        sourceCompatibility = JavaVersion.toVersion(project.javaLibraryVersion)
+        targetCompatibility = JavaVersion.toVersion(project.javaLibraryVersion)
+    }
+    packaging {
+        resources {
+            excludes += BuildConstants.META_INF_EXCLUDES
         }
     }
 }
 
-// 2. Configure the Android Extension
-android {
-    namespace = project.group.toString()
-
-    compileSdk = 34
-    defaultConfig { minSdk = 24 }
-    compileOptions {
-        sourceCompatibility = JavaVersion.toVersion(javaVersion)
-        targetCompatibility = JavaVersion.toVersion(javaVersion)
-    }
-    packaging {
-        resources {
-            excludes += "/META-INF/{AL2.0,LGPL2.1}"
-        }
+kotlin {
+    compilerOptions {
+        jvmTarget.set(JvmTarget.fromTarget(project.javaLibraryVersion.toString()))
     }
 }

@@ -1,4 +1,3 @@
-@file:OptIn(ExperimentalUuidApi::class)
 
 import id.walt.commons.testing.E2ETest
 import id.walt.webwallet.db.models.WalletDid
@@ -10,12 +9,10 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.Assertions.assertTrue
 import kotlin.test.assertNotNull
-import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
-@OptIn(ExperimentalUuidApi::class)
 class DidsApi(private val e2e: E2ETest, private val client: HttpClient) {
-    private val didRegexPattern = "^^did:%s:\\S+\$"
+    private val didRegexPattern = $$"^^did:%s:\\S+$"
     suspend fun list(
         wallet: Uuid,
         expectedDefault: DefaultDidOption,
@@ -66,7 +63,7 @@ class DidsApi(private val e2e: E2ETest, private val client: HttpClient) {
             }
         }
 
-    suspend fun importDid(wallet: Uuid , didImportRequest : DidImportRequest) =
+    suspend fun importDid(wallet: Uuid, didImportRequest: DidImportRequest) =
         e2e.test("/wallet-api/wallet/{wallet}/dids/import - import did") {
             client.post("/wallet-api/wallet/$wallet/dids/import") {
                 setBody(didImportRequest)

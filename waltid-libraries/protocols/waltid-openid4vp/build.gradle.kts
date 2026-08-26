@@ -10,7 +10,7 @@ kotlin {
     sourceSets {
         commonMain.dependencies {
             // Coroutines
-            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
+            implementation(identityLibs.kotlinx.coroutines.core)
 
             // HTTP
             implementation(identityLibs.ktor.client.core)
@@ -19,11 +19,12 @@ kotlin {
             implementation(identityLibs.oshai.kotlinlogging)
 
             // JSON
-            implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
+            implementation(identityLibs.kotlinx.serialization.json)
 
             /*
              * walt.id:
              */
+            implementation(project(":waltid-libraries:crypto:waltid-crypto"))
             implementation(project(":waltid-libraries:credentials:waltid-dcql"))
         }
         commonTest.dependencies {

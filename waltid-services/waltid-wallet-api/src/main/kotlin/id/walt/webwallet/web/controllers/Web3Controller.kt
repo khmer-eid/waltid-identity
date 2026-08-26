@@ -11,10 +11,8 @@ import io.ktor.server.application.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import kotlinx.serialization.json.Json
-import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
-@OptIn(ExperimentalUuidApi::class)
 fun Application.web3accounts() = walletRoute {
     route("web3accounts", {
         tags = listOf("Web3 wallet accounts")
@@ -62,7 +60,8 @@ fun Application.web3accounts() = walletRoute {
             request {
                 body<String> {
                     required = true
-                    description = "Wallet id" }
+                    description = "Wallet id"
+                }
             }
             response {
                 HttpStatusCode.OK to { description = "Wallet unlinked" }

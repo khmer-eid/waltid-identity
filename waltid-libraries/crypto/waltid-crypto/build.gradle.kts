@@ -1,15 +1,12 @@
-fun getSetting(name: String) = providers.gradleProperty(name).orNull.toBoolean()
-val enableIosBuild = getSetting("enableIosBuild")
-
 plugins {
-    id("waltid.multiplatform.library")
+    id("waltid.full.library")
     id("waltid.publish.maven")
 }
 
 group = "id.walt.crypto"
 
 kotlin {
-    js(IR) {
+    js {
         outputModuleName = "crypto"
     }
 
@@ -17,6 +14,7 @@ kotlin {
         commonMain.dependencies {
             // Kotlinx.serialization
             implementation(identityLibs.kotlinx.serialization.json)
+            implementation(identityLibs.kotlinx.serialization.cbor)
 
             // Kotlinx
             implementation(identityLibs.kotlinx.datetime)
@@ -34,38 +32,73 @@ kotlin {
             //
 
             // Hashes
-            implementation(project.dependencies.platform(identityLibs.kotlincrypto.hash.bom))
+            implementation(identityLibs.kotlincrypto.hash.sha1)
             implementation(identityLibs.kotlincrypto.hash.sha2)
-            implementation(project.dependencies.platform(identityLibs.kotlincrypto.macs.bom))
             implementation(identityLibs.kotlincrypto.macs.hmac.sha2)
         }
         commonTest.dependencies {
-            implementation(kotlin("test-common"))
-            implementation(kotlin("test-annotations-common"))
+            implementation(kotlin("test"))
             implementation(identityLibs.kotlinx.coroutines.test)
         }
-        jvmMain.dependencies {
-            // Crypto
-            implementation(identityLibs.tink) // for JOSE using Ed25519
+        val jvmAndroidMain by getting {
+            dependencies {
+                implementation(identityLibs.tink)
+                implementation(identityLibs.bouncycastle.prov)
+                implementation(identityLibs.bouncycastle.pkix)
+                implementation(identityLibs.nimbus.jose.jwt)
+                implementation(identityLibs.kotlinx.serialization.cbor)
+                implementation(identityLibs.kotlinx.coroutines.jdk8)
+            }
+        }
+        if (enableAndroidBuild || enableIosBuild) {
+            val mobileMain by creating {
+                dependsOn(commonMain.get())
+                dependencies {
+                    implementation(identityLibs.signum.indispensable)
+                    implementation(identityLibs.signum.indispensable.josef)
+                    implementation(identityLibs.signum.supreme)
+                    implementation(identityLibs.cryptography.core)
+                }
+            }
 
-            implementation(identityLibs.bouncycastle.prov) // for secp256k1 (which was removed with Java 17)
-            implementation(identityLibs.bouncycastle.pkix) // PEM import
+            if (enableAndroidBuild) {
+                named("androidMain") {
+                    dependsOn(mobileMain)
+                    dependencies {
+                        implementation(identityLibs.kotlinx.coroutines.android)
+                        implementation(identityLibs.cryptography.provider.jdk)
+                    }
+                }
+                named("androidDeviceTest") {
+                    dependencies {
+                        implementation(kotlin("test"))
+                        implementation(identityLibs.kotlinx.coroutines.test)
+                        implementation(identityLibs.androidx.test.ext.junit)
+                        implementation(identityLibs.androidx.test.runner)
+                        implementation(identityLibs.androidx.test.rules)
+                    }
+                }
+            }
 
-            implementation(identityLibs.nimbus.jose.jwt)
-
-            // Ktor client
-            implementation(identityLibs.ktor.client.okhttp)
-
-            // Coroutines
-            implementation(identityLibs.kotlinx.coroutines.jdk8)
+            if (enableIosBuild) {
+                iosMain.get().dependsOn(mobileMain)
+                iosMain.dependencies {
+                    implementation(identityLibs.cryptography.provider.optimal)
+                    implementation(identityLibs.cryptography.provider.openssl3.prebuilt)
+                }
+                iosTest.dependencies {
+                    implementation(kotlin("test"))
+                    implementation(identityLibs.signum.indispensable)
+                    implementation(identityLibs.signum.indispensable.josef)
+                    implementation(identityLibs.signum.supreme)
+                    implementation(identityLibs.kotlinx.coroutines.test)
+                }
+            }
         }
         jvmTest.dependencies {
             implementation(kotlin("test"))
-
-            // Logging
             implementation(identityLibs.slf4j.simple)
-
-            // Test
+            implementation(identityLibs.ktor.client.java)
             implementation(identityLibs.junit.jupiter.api)
             implementation(identityLibs.kotlinx.serialization.json)
             implementation(identityLibs.junit.jupiter.params)
@@ -76,24 +109,6 @@ kotlin {
         }
         jsTest.dependencies {
             implementation(kotlin("test-js"))
-        }
-        if (enableIosBuild) {
-            val iosMain by creating {
-                dependsOn(commonMain.get())
-                dependencies {
-                    implementation(project(":waltid-libraries:crypto:waltid-target-ios"))
-                }
-            }
-
-            val iosTest by creating {
-                dependsOn(commonTest.get())
-            }
-
-            val iosArm64Main by getting { dependsOn(iosMain) }
-            val iosSimulatorArm64Main by getting { dependsOn(iosMain) }
-
-            val iosArm64Test by getting { dependsOn(iosTest) }
-            val iosSimulatorArm64Test by getting { dependsOn(iosTest) }
         }
     }
 }

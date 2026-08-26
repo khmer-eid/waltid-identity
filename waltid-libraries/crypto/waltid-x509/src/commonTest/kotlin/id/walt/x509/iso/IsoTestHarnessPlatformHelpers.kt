@@ -1,11 +1,13 @@
 package id.walt.x509.iso
 
-import okio.ByteString
+import id.walt.certificate.x509.createCertificateTestKey
+import id.walt.crypto.keys.Key
+import id.walt.crypto.keys.KeyType
 
-expect fun isBigIntegerZero(
-    bigInt: ByteString,
-): Boolean
-
-expect fun isBigIntegerPositive(
-    bigInt: ByteString,
-): Boolean
+internal suspend fun createIsoTestKey(
+    keyType: KeyType,
+    hasPrivateKey: Boolean = true,
+): Key {
+    val key = createCertificateTestKey(keyType)
+    return if (hasPrivateKey) key else key.getPublicKey()
+}

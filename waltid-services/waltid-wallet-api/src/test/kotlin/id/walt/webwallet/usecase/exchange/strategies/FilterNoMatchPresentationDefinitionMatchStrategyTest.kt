@@ -1,4 +1,3 @@
-@file:OptIn(ExperimentalUuidApi::class)
 
 package id.walt.webwallet.usecase.exchange.strategies
 
@@ -18,10 +17,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.time.Clock
-import kotlin.time.ExperimentalTime
-import kotlin.uuid.ExperimentalUuidApi
 
-@OptIn(ExperimentalUuidApi::class, ExperimentalTime::class)
 class FilterNoMatchPresentationDefinitionMatchStrategyTest {
 
     private val filterParserMock = mockk<PresentationDefinitionFilterParser>()

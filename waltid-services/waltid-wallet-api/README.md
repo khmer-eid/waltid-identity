@@ -12,13 +12,13 @@
   
   <h2>Status</h2>
   <p align="center">
-    <img src="https://img.shields.io/badge/🟢%20Actively%20Maintained-success?style=for-the-badge&logo=check-circle" alt="Status: Actively Maintained" />
-    <br/>
-    <em>This project is being actively maintained by the development team at walt.id.<br />Regular updates, bug fixes, and new features are being added.</em>
+    <img src="https://img.shields.io/badge/🟠%20Planned%20Deprecation-orange?style=for-the-badge&logo=clock" alt="Status: Planned Deprecation" />
+  <br/>
+  <em>This project is still supported by the development team at walt.id, but is planned for deprecation sometime in Q2 2026.<br />We encourage users to migrate to using alternative libraries listed below.</em>
   </p>
-
-
 </div>
+
+This api only supports OpenID4VCI draft 13 & 14 and OpenID4VP draft 14, draft 20 and V1.0. For full OpenID4VCI + OpenID4VP 1.0 support, use [waltid-wallet-api2](../waltid-wallet-api2).
 
 Watch the [Intro Video](https://www.youtube.com/watch?v=ILaSAxjoHbw&t=1s) to learn about features and see a demo.
 The [documentation](https://docs.walt.id/community-stack/wallet/getting-started) explains how to create and manage identity
@@ -34,9 +34,7 @@ from different blockchain ecosystems like Ethereum, Polygon, and more.
 
 # Protocol Support
 
-The wallet-api currently supports OpenID4VCI Draft 11 and Draft 13, and OpenID4VP Draft 14 and Draft 20.
-
-**NOTE**: The wallet-api does not support OpenID4VP 1.0 yet, which is used by the new verifier service [waltid-verifier-api2](../waltid-verifier-api2). You should only use this api alongside the original issuer and verifier services which match the same draft specifications.
+The wallet-api currently supports OpenID4VCI Draft 11 and Draft 13, OpenID4VP Draft 14 and Draft 20, and OpenID4VP 1.0 with routing, presentation request resolution, DCQL-based credential matching, and support for `request_uri`, unsigned `request`, and signed request-object request shapes.
 
 # How to use it
 

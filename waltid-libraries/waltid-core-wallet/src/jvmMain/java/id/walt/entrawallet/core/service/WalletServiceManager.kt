@@ -12,18 +12,18 @@ import id.walt.webwallet.usecase.exchange.strategies.FilterPresentationDefinitio
 import id.walt.webwallet.utils.WalletHttpClients.getHttpClient
 import io.github.oshai.kotlinlogging.KotlinLogging
 import java.util.concurrent.ConcurrentHashMap
-import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
-@OptIn(ExperimentalUuidApi::class)
 object WalletServiceManager {
 
     private val logger = KotlinLogging.logger { }
 
     private val walletServices = ConcurrentHashMap<Pair<Uuid, Uuid>, WalletService>()
     val httpClient = getHttpClient()
-//    private val credentialTypeSeeker = DefaultCredentialTypeSeeker()
+
+    //    private val credentialTypeSeeker = DefaultCredentialTypeSeeker()
     private val filterParser = PresentationDefinitionFilterParser()
+
     /*private val statusListCredentialFetchFactory = StatusListCredentialFetchFactory(
         defaultStrategy = DefaultStatusListCredentialFetchStrategy(httpClient),
         entraStrategy = EntraStatusListCredentialFetchStrategy(
@@ -32,15 +32,15 @@ object WalletServiceManager {
             jwsDecoder = JwsDecoder()
         )
     )*/
-  /*  private val credentialStatusServiceFactory = CredentialStatusServiceFactory(
-        statusListService = StatusListCredentialStatusService(
-            credentialFetchFactory = statusListCredentialFetchFactory,
-            credentialValidator = CredentialValidator(),
-            bitStringValueParser = BitStringValueParser(),
-        ),
-    )
-    private val issuerNameResolutionService by lazy { DefaultNameResolutionService(httpClient, trustConfig.issuersRecord) }
-    private val verifierNameResolutionService by lazy { DefaultNameResolutionService(httpClient, trustConfig.verifiersRecord) }*/
+    /*  private val credentialStatusServiceFactory = CredentialStatusServiceFactory(
+          statusListService = StatusListCredentialStatusService(
+              credentialFetchFactory = statusListCredentialFetchFactory,
+              credentialValidator = CredentialValidator(),
+              bitStringValueParser = BitStringValueParser(),
+          ),
+      )
+      private val issuerNameResolutionService by lazy { DefaultNameResolutionService(httpClient, trustConfig.issuersRecord) }
+      private val verifierNameResolutionService by lazy { DefaultNameResolutionService(httpClient, trustConfig.verifiersRecord) }*/
     /*private val issuerNameResolutionUseCase by lazy {
         EntityNameResolutionUseCase(
             EntityNameResolutionCacheService,
@@ -53,10 +53,10 @@ object WalletServiceManager {
             verifierNameResolutionService
         )
     }*/
-   /* val issuerUseCase by lazy { IssuerUseCaseImpl(service = IssuersService, http = httpClient) }
-    val oidcConfig by lazy { ConfigManager.getConfig<OidcConfiguration>() }
-    val issuerTrustValidationService by lazy { DefaultTrustValidationService(httpClient, trustConfig.issuersRecord) }
-    val verifierTrustValidationService by lazy { DefaultTrustValidationService(httpClient, trustConfig.verifiersRecord) }*/
+    /* val issuerUseCase by lazy { IssuerUseCaseImpl(service = IssuersService, http = httpClient) }
+     val oidcConfig by lazy { ConfigManager.getConfig<OidcConfiguration>() }
+     val issuerTrustValidationService by lazy { DefaultTrustValidationService(httpClient, trustConfig.issuersRecord) }
+     val verifierTrustValidationService by lazy { DefaultTrustValidationService(httpClient, trustConfig.verifiersRecord) }*/
     val matchPresentationDefinitionCredentialsUseCase = MatchPresentationDefinitionCredentialsUseCase(
         FilterPresentationDefinitionMatchStrategy(filterParser),
         DescriptorPresentationDefinitionMatchStrategy()

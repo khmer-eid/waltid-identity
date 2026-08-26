@@ -1,20 +1,26 @@
 package id.walt.verifier.openid.models.authorization
 
-import kotlinx.serialization.*
+import kotlinx.serialization.ExperimentalSerializationApi
+import kotlinx.serialization.KSerializer
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.descriptors.buildClassSerialDescriptor
 import kotlinx.serialization.descriptors.element
-import kotlinx.serialization.encoding.*
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.*
 
 /**
  * Represents the 'client_metadata' parameter.
  * See: Section 5.1 and RFC 7591 for internationalized metadata support.
- * 
+ *
  * Supports RFC 7591 language-tagged metadata fields (e.g., `client_name#fr-FR`, `logo_uri#en`).
  * Language tags follow BCP 47 format and are case-insensitive.
  */
+@ExperimentalSerializationApi
 @Serializable(with = ClientMetadataSerializer::class)
+@JsonIgnoreUnknownKeys
 data class ClientMetadata(
     /**
      * OPTIONAL. A JSON Web Key Set [RFC7517] that contains one or more public keys,
@@ -37,6 +43,14 @@ data class ClientMetadata(
      */
     @SerialName("encrypted_response_enc_values_supported")
     val encryptedResponseEncValuesSupported: List<String>? = null,
+
+    /** REQUIRED by SIOPv2 when the Verifier requests a Self-Issued ID Token. */
+    @SerialName("subject_syntax_types_supported")
+    val subjectSyntaxTypesSupported: List<String>? = null,
+
+    /** OPTIONAL JWS algorithm required for a Self-Issued ID Token response. */
+    @SerialName("id_token_signed_response_alg")
+    val idTokenSignedResponseAlg: String? = null,
 
     /**
      * OPTIONAL. Human-readable name of the client (Verifier).
@@ -116,7 +130,26 @@ data class ClientMetadata(
     data class Jwks(val keys: List<JsonObject>)
 
     companion object {
+        /**
+         * Default `id_token_signed_response_alg` when the Verifier does not request a specific one.
+         *
+         * SIOPv2 defines ES256 as the Self-Issued OP default (`id_token_signing_alg_values_supported`),
+         * not RS256 as OpenID Connect Dynamic Client Registration does. Holder keys are P-256 in the
+         * default mobile setup and cannot sign RS256 at all, so RS256 would make the default
+         * `vp_token id_token` flow fail before signing.
+         *
+         * Shared by the Verifier (request construction and id_token validation) and the Wallet
+         * (id_token signing) so all three sides agree on one value.
+         */
+        const val DEFAULT_ID_TOKEN_SIGNED_RESPONSE_ALG: String = "ES256"
+
         private val jsonParser = Json { ignoreUnknownKeys = true }
+        fun fromJson(jsonString: JsonElement): Result<ClientMetadata> {
+            return runCatching {
+                jsonParser.decodeFromJsonElement<ClientMetadata>(jsonString)
+            }
+        }
+
         fun fromJson(jsonString: String): Result<ClientMetadata> {
             return runCatching {
                 jsonParser.decodeFromString<ClientMetadata>(jsonString)
@@ -127,25 +160,30 @@ data class ClientMetadata(
 
 /**
  * Custom serializer for ClientMetadata that handles RFC 7591 internationalized metadata fields.
- * 
+ *
  * Language-tagged fields follow the pattern: `field_name#language-tag` (e.g., `client_name#fr-FR`).
  * The language tag is separated from the field name by a `#` character.
  */
+@OptIn(ExperimentalSerializationApi::class)
 object ClientMetadataSerializer : KSerializer<ClientMetadata> {
     // Fields that support internationalization per RFC 7591
     private val i18nFields = setOf("client_name", "logo_uri", "tos_uri", "policy_uri", "client_uri")
-    
+
     // Regular (non-i18n) fields
     private val regularFields = setOf(
         "jwks",
         "vp_formats_supported",
-        "encrypted_response_enc_values_supported"
+        "encrypted_response_enc_values_supported",
+        "subject_syntax_types_supported",
+        "id_token_signed_response_alg",
     )
 
     override val descriptor: SerialDescriptor = buildClassSerialDescriptor("ClientMetadata") {
         element<JsonObject?>("jwks", isOptional = true)
         element<Map<String, JsonObject>?>("vp_formats_supported", isOptional = true)
         element<List<String>?>("encrypted_response_enc_values_supported", isOptional = true)
+        element<List<String>?>("subject_syntax_types_supported", isOptional = true)
+        element<String?>("id_token_signed_response_alg", isOptional = true)
         element<String?>("client_name", isOptional = true)
         element<String?>("logo_uri", isOptional = true)
         element<String?>("tos_uri", isOptional = true)
@@ -155,7 +193,7 @@ object ClientMetadataSerializer : KSerializer<ClientMetadata> {
 
     override fun deserialize(decoder: Decoder): ClientMetadata {
         require(decoder is JsonDecoder) { "ClientMetadata can only be deserialized from JSON" }
-        
+
         val json = decoder.decodeJsonElement().jsonObject
         val jsonParser = Json { ignoreUnknownKeys = true }
 
@@ -164,6 +202,9 @@ object ClientMetadataSerializer : KSerializer<ClientMetadata> {
         val vpFormatsSupported = json["vp_formats_supported"]?.jsonObject?.mapValues { it.value.jsonObject }
         val encryptedResponseEncValuesSupported = json["encrypted_response_enc_values_supported"]
             ?.jsonArray?.map { it.jsonPrimitive.content }
+        val subjectSyntaxTypesSupported = json["subject_syntax_types_supported"]
+            ?.jsonArray?.map { it.jsonPrimitive.content }
+        val idTokenSignedResponseAlg = json["id_token_signed_response_alg"]?.jsonPrimitive?.content
 
         // Extract base i18n fields (without language tags)
         val clientName = (json["client_name"] as? JsonPrimitive)?.takeIf { it.isString }?.content
@@ -187,23 +228,28 @@ object ClientMetadataSerializer : KSerializer<ClientMetadata> {
                 if (parts.size == 2) {
                     val fieldName = parts[0]
                     val languageTag = parts[1]
-                    
+
                     when (fieldName) {
                         "client_name" -> {
                             (value as? JsonPrimitive)?.takeIf { it.isString }?.content?.let { clientNameI18n[languageTag] = it }
                         }
+
                         "logo_uri" -> {
                             (value as? JsonPrimitive)?.takeIf { it.isString }?.content?.let { logoUriI18n[languageTag] = it }
                         }
+
                         "tos_uri" -> {
                             (value as? JsonPrimitive)?.takeIf { it.isString }?.content?.let { tosUriI18n[languageTag] = it }
                         }
+
                         "policy_uri" -> {
                             (value as? JsonPrimitive)?.takeIf { it.isString }?.content?.let { policyUriI18n[languageTag] = it }
                         }
+
                         "client_uri" -> {
                             (value as? JsonPrimitive)?.takeIf { it.isString }?.content?.let { clientUriI18n[languageTag] = it }
                         }
+
                         else -> {
                             // Unknown i18n field - store in additionalFields
                             additionalFields[key] = value
@@ -220,6 +266,8 @@ object ClientMetadataSerializer : KSerializer<ClientMetadata> {
             jwks = jwks,
             vpFormatsSupported = vpFormatsSupported,
             encryptedResponseEncValuesSupported = encryptedResponseEncValuesSupported,
+            subjectSyntaxTypesSupported = subjectSyntaxTypesSupported,
+            idTokenSignedResponseAlg = idTokenSignedResponseAlg,
             clientName = clientName,
             clientNameI18n = clientNameI18n,
             logoUri = logoUri,
@@ -236,20 +284,22 @@ object ClientMetadataSerializer : KSerializer<ClientMetadata> {
 
     override fun serialize(encoder: Encoder, value: ClientMetadata) {
         require(encoder is JsonEncoder) { "ClientMetadata can only be serialized to JSON" }
-        
+
         val jsonObject = buildJsonObject {
             // Regular fields
             value.jwks?.let { put("jwks", Json.encodeToJsonElement(it)) }
             value.vpFormatsSupported?.let { put("vp_formats_supported", Json.encodeToJsonElement(it)) }
             value.encryptedResponseEncValuesSupported?.let { put("encrypted_response_enc_values_supported", Json.encodeToJsonElement(it)) }
-            
+            value.subjectSyntaxTypesSupported?.let { put("subject_syntax_types_supported", Json.encodeToJsonElement(it)) }
+            value.idTokenSignedResponseAlg?.let { put("id_token_signed_response_alg", it) }
+
             // Base i18n fields (without language tags)
             value.clientName?.let { put("client_name", it) }
             value.logoUri?.let { put("logo_uri", it) }
             value.tosUri?.let { put("tos_uri", it) }
             value.policyUri?.let { put("policy_uri", it) }
             value.clientUri?.let { put("client_uri", it) }
-            
+
             // Language-tagged fields
             value.clientNameI18n.forEach { (lang, name) ->
                 put("client_name#$lang", name)
@@ -266,13 +316,13 @@ object ClientMetadataSerializer : KSerializer<ClientMetadata> {
             value.clientUriI18n.forEach { (lang, uri) ->
                 put("client_uri#$lang", uri)
             }
-            
+
             // Additional fields (including unknown i18n fields)
             value.additionalFields.forEach { (key, element) ->
                 put(key, element)
             }
         }
-        
+
         encoder.encodeJsonElement(jsonObject)
     }
 }

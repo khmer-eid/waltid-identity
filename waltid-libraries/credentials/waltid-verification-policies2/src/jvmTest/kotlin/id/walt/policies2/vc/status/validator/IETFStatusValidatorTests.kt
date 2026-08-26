@@ -1,5 +1,6 @@
 package id.walt.policies2.vc.status.validator
 
+import id.walt.policies2.vc.policies.status.StatusListContent
 import id.walt.policies2.vc.policies.status.bit.BitRepresentationStrategy
 import id.walt.policies2.vc.policies.status.bit.LittleEndianRepresentation
 import id.walt.policies2.vc.policies.status.expansion.StatusListExpansionAlgorithm
@@ -10,11 +11,14 @@ import id.walt.policies2.vc.policies.status.validator.IETFStatusValidator
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
+import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.DisplayName
+import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
 import org.junit.jupiter.params.provider.Arguments
 import java.util.stream.Stream
+import kotlin.test.assertTrue
 import kotlin.reflect.KClass
 
 @DisplayName("IETFStatusValidator Tests")
@@ -25,7 +29,7 @@ class IETFStatusValidatorTests : StatusValidatorTestsBase<IETFEntry, IETFStatusP
     fun setup() {
         coEvery { mockFetcher.fetch(uri) } returns Result.success(statusListContent)
         every { mockBitValueReaderFactory.new(strategy = ofType(LittleEndianRepresentation::class)) } returns mockBitValueReader
-        every { mockStatusReader.canHandle(statusListContent) } returns true
+        every { mockStatusReader.canHandle(ofType(StatusListContent::class)) } returns true
         sut = createStatusValidator()
     }
 
@@ -49,6 +53,10 @@ class IETFStatusValidatorTests : StatusValidatorTestsBase<IETFEntry, IETFStatusP
         value = value
     )
 
+    override fun createAttributeWithValues(scenario: TestScenario, values: List<UInt>) = IETFStatusPolicyAttribute(
+        values = values
+    )
+
     override fun createStatusContent(scenario: TestScenario, size: Int) = IETFStatusContent(
         list = "encoded_ietf_list_default",
         size = size
@@ -66,5 +74,20 @@ class IETFStatusValidatorTests : StatusValidatorTestsBase<IETFEntry, IETFStatusP
         statusSize: Int, expansionAlgorithmType: KClass<out StatusListExpansionAlgorithm>
     ) {
         coVerify { mockBitValueReader.get(any(), index, statusSize, mockExpansionAlgorithm) }
+    }
+
+    @Test
+    fun `should validate suspended two bit IETF value from little-endian bit order`() = runTest {
+        val content = IETFStatusContent(list = "encoded_ietf_list_default", size = 2)
+        val entry = IETFEntry(IETFEntry.StatusListField(index = index, uri = uri))
+
+        every { mockStatusReader.read(statusListContent) } returns Result.success(content)
+        coEvery {
+            mockBitValueReader.get(any(), index, 2, mockExpansionAlgorithm)
+        } returns listOf('0', '1')
+
+        val result = sut.validate(entry, IETFStatusPolicyAttribute(value = 2u))
+
+        assertTrue(result.isSuccess)
     }
 }

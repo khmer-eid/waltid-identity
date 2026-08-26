@@ -1,12 +1,15 @@
-FROM docker.io/node:alpine AS buildstage
-COPY ./package.json /build/
+FROM node:22-alpine AS buildstage
 WORKDIR /build
-RUN npm install
+COPY package.json package-lock.json ./
+RUN npm config set fetch-retries 5 \
+    && npm config set fetch-retry-mintimeout 20000 \
+    && npm config set fetch-retry-maxtimeout 120000 \
+    && npm ci --legacy-peer-deps --no-audit --no-fund
 COPY ./ /build
 
 RUN npm run build
 # RUN
-FROM docker.io/node:alpine
+FROM node:22-alpine
 
 # Create non-root user
 RUN addgroup -g 10001 -S appgroup && \

@@ -1,4 +1,3 @@
-@file:OptIn(ExperimentalUuidApi::class)
 
 package id.walt.test.integration.environment.api.wallet
 
@@ -11,8 +10,8 @@ import id.walt.webwallet.service.credentials.CredentialFilterObject
 import id.walt.webwallet.service.keys.SingleKeyResponse
 import id.walt.webwallet.web.controllers.exchange.UsePresentationRequest
 import io.ktor.client.*
+import kotlinx.serialization.json.JsonElement
 import kotlin.test.assertEquals
-import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
 class WalletApi(
@@ -45,6 +44,9 @@ class WalletApi(
     suspend fun deleteKeyRaw(keyId: String) = keysApi.deleteKeyRaw(walletId, keyId)
     suspend fun deleteKey(keyId: String) = keysApi.deleteKey(walletId, keyId)
     suspend fun importKey(keyId: String): String = keysApi.importKey(walletId, keyId)
+
+    suspend fun signWithKey(keyId: String, message: JsonElement): String = keysApi.sign(walletId, keyId, message)
+    suspend fun signWithKeyRaw(keyId: String, message: JsonElement) = keysApi.signRaw(walletId, keyId, message)
 
     //=========================================================================
     // Dids API
@@ -161,5 +163,7 @@ class WalletApi(
 
     suspend fun detachCategoriesFromCredential(credentialId: String, vararg categories: String) =
         credentialApi.detachCategoriesFromCredential(walletId, credentialId, *categories)
-
+ 
+    suspend fun importCredential(jwt: String, associatedDid: String) =
+        credentialApi.importCredential(walletId, jwt, associatedDid)
 }

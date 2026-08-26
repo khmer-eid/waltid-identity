@@ -55,6 +55,31 @@ Modern cryptographic library implementation with improved API design and structu
 
 **Use when:** Not recommended.
 
+### WIP: [🔨 waltid-crypto2-kms](./waltid-crypto2-kms)
+Multiplatform REST KMS providers for `waltid-crypto2`, with injected HTTP clients and externally resolved credential references.
+
+**Use when:** Migrating managed keys to crypto2.
+
+### WIP: [🔨 waltid-crypto2-kms-aws-sdk](./waltid-crypto2-kms-aws-sdk)
+Optional JVM AWS SDK provider for default credentials, aliases, tags, multi-region replicas, and regional failover.
+
+### WIP: [🔨 waltid-crypto2-kms-azure-identity](./waltid-crypto2-kms-azure-identity)
+Optional JVM Azure Identity token bridge for managed, workload, and default credentials with the crypto2 Key Vault REST provider.
+
+### WIP: [🔨 waltid-crypto2-signum](./waltid-crypto2-signum)
+Android KeyStore and iOS Keychain/Secure Enclave managed-key provider with persisted hardware, authentication, ECDH, and attestation policy.
+
+### WIP: [🔨 waltid-crypto2-pkcs11](./waltid-crypto2-pkcs11)
+JVM PKCS#11 provider tested with SoftHSM, with an opt-in Thales Luna conformance smoke test.
+
+### WIP: [🔨 waltid-crypto2-migration-v1](./waltid-crypto2-migration-v1)
+One-way parser and provider migration boundary for persisted `waltid-crypto` v1 keys.
+
+### WIP: [🔨 waltid-jose](./waltid-jose)
+Multiplatform JWK, JWS, and JWE implementation built on `waltid-crypto2`, without platform-specific JOSE libraries.
+
+**Use when:** Migrating current-stack JOSE operations to crypto2.
+
 ### [🟢 waltid-cose](./waltid-cose)
 CBOR Object Signing and Encryption (COSE) implementation. Provides support for COSE message formats used in mdoc credentials and other CBOR-based cryptographic protocols.
 
@@ -65,16 +90,6 @@ X.509 certificate handling and validation. Provides utilities for parsing, valid
 
 **Use when:** You need to handle X.509 certificates, validate certificate chains, or work with PKI-based trust systems.
 
-### [🟡 waltid-crypto-android](./waltid-crypto-android)
-Android-specific cryptographic implementations. Provides Android platform optimizations and Android Keystore integration.
-
-**Use when:** You're building Android applications and need platform-specific cryptographic optimizations or Android Keystore integration.
-
-### [🟡 waltid-crypto-ios](./waltid-crypto-ios)
-iOS-specific cryptographic implementations. Provides iOS platform support and native iOS cryptographic operations.
-
-**Use when:** You're building iOS applications and need native iOS cryptographic support.
-
 ### [🟡 waltid-crypto-aws](./waltid-crypto-aws)
 AWS Key Management Service (KMS) integration. Provides seamless integration with AWS KMS for key management and cryptographic operations.
 
@@ -84,11 +99,6 @@ AWS Key Management Service (KMS) integration. Provides seamless integration with
 Oracle Cloud Infrastructure (OCI) KMS integration. Provides integration with OCI Key Management for key management and cryptographic operations.
 
 **Use when:** You need to use Oracle Cloud Infrastructure KMS for key management in OCI-based deployments that require the SDK over the REST API.
-
-### [🟡 waltid-target-ios](./waltid-target-ios)
-iOS target support for multiplatform crypto libraries. Provides the necessary infrastructure and bindings for iOS platform support in multiplatform cryptographic libraries.
-
-**Use when:** You're building multiplatform libraries that need iOS support and require iOS-specific implementations.
 
 ## Join the community
 
@@ -103,4 +113,3 @@ Licensed under the [Apache License, Version 2.0](https://github.com/walt-id/walt
 <div align="center">
 <img src="../../assets/walt-banner.png" alt="walt.id banner" />
 </div>
-

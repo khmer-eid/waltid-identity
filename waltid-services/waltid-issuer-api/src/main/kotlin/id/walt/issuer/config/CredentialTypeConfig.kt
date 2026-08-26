@@ -16,6 +16,7 @@ private var baseUrl =
 
 @Serializable
 data class CredentialTypeConfig(
+    val issuerDisplay: List<DisplayProperties>? = null,
     val supportedCredentialTypes: Map<String, JsonElement> = mapOf(
         "BankId" to vc("VerifiableCredential", "BankId"),
         "KycChecksCredential" to vc("VerifiableCredential", "VerifiableAttestation", "KycChecksCredential"),
@@ -133,7 +134,7 @@ data class CredentialTypeConfig(
         ),
         "urn:eu.eur1opa.ec.eudi:pid:1" to vc(
             CredentialSupported(
-                format = CredentialFormat.sd_jwt_vc,
+                format = CredentialFormat.sd_jwt_dc,
                 cryptographicBindingMethodsSupported = setOf("jwk"),
                 credentialSigningAlgValuesSupported = setOf(CredSignAlgValues.Named("ES256")),
                 vct = baseUrl.plus("/urn:eu.europa.ec.eudi:pid:1")
@@ -141,7 +142,7 @@ data class CredentialTypeConfig(
         ),
         "identity_credential_vc+sd-jwt" to vc(
             CredentialSupported(
-                format = CredentialFormat.sd_jwt_vc,
+                format = CredentialFormat.sd_jwt_dc,
                 cryptographicBindingMethodsSupported = setOf("jwk"),
                 credentialSigningAlgValuesSupported = setOf(CredSignAlgValues.Named("ES256")),
                 vct = baseUrl.plus("/identity_credential"),
@@ -166,7 +167,7 @@ data class CredentialTypeConfig(
         ),
         "my_custom_vct_vc+sd-jwt" to vc(
             CredentialSupported(
-                format = CredentialFormat.sd_jwt_vc,
+                format = CredentialFormat.sd_jwt_dc,
                 cryptographicBindingMethodsSupported = setOf("did", "jwk"),
                 credentialSigningAlgValuesSupported = setOf(CredSignAlgValues.Named("ES256")),
                 vct = "https://example.com/my_custom_vct",
@@ -181,7 +182,7 @@ data class CredentialTypeConfig(
         ),
         "photoID_credential_vc+sd-jwt" to vc(
             CredentialSupported(
-                format = CredentialFormat.sd_jwt_vc,
+                format = CredentialFormat.sd_jwt_dc,
                 cryptographicBindingMethodsSupported = setOf("jwk"),
                 credentialSigningAlgValuesSupported = setOf(CredSignAlgValues.Named("ES256")),
                 vct = baseUrl + "/PhotoIDCredential",
@@ -195,7 +196,7 @@ data class CredentialTypeConfig(
             )
         ),
 
-    ),
+        ),
 ) : WaltConfig() {
     fun parse(): Map<String, CredentialSupported> {
         return supportedCredentialTypes.flatMap { entry ->
@@ -208,7 +209,16 @@ data class CredentialTypeConfig(
                 is JsonArray -> {
                     val type = element.jsonArray.map { it.jsonPrimitive.content }
 
-                    CredentialFormat.entries.minus(CredentialFormat.mso_mdoc).associate { format ->
+                    // Only advertise formats that are actually issuable.
+                    // jwt_vc_json-ld and ldp_vc are not implemented (fall to JWT path silently),
+                    // and VP formats (jwt_vp_json, ldp_vp, etc.) do not belong in credentials_supported.
+                    val issuableFormats = listOf(
+                        CredentialFormat.jwt_vc_json,
+                        CredentialFormat.sd_jwt_vc,
+                        CredentialFormat.jwt_vc,
+                    )
+
+                    issuableFormats.associate { format ->
                         "${entry.key}_${format.value}" to CredentialSupported(
                             format = format,
                             cryptographicBindingMethodsSupported = if (format == CredentialFormat.sd_jwt_vc) setOf("jwk") else setOf(

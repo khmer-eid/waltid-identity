@@ -1,5 +1,9 @@
+@file:OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+
 package id.walt.openid4vp.clientidprefix
 
+import id.walt.certificate.x509.X509CertificateTrustStore
+import id.walt.certificate.x509.truststore.InMemoryTrustStore
 import id.walt.verifier.openid.models.authorization.ClientMetadata
 import kotlinx.serialization.Serializable
 
@@ -8,11 +12,31 @@ import kotlinx.serialization.Serializable
  */
 data class RequestContext(
     val clientId: String,
-    val clientMetadataJson: String? = null,
+    val clientMetadata: ClientMetadata? = null,
     val requestObjectJws: String? = null, // The full, signed Request Object JWT
     val redirectUri: String? = null,
-    val responseUri: String? = null
-)
+    val responseUri: String? = null,
+) {
+    constructor(
+        clientId: String,
+        clientMetadataString: String?,
+        requestObjectJws: String? = null, // The full, signed Request Object JWT
+        redirectUri: String? = null,
+        responseUri: String? = null,
+    ) : this(clientId, clientMetadataString?.let { ClientMetadata.fromJson(it).getOrThrow() }, requestObjectJws, redirectUri, responseUri)
+}
+
+data class ClientIdTrustConfiguration(
+    /**
+     * List of trusted X.509 certificate DERs in base64 format.
+     */
+    val x509TrustAnchors: X509CertificateTrustStore? = null,
+    val trustedVerifierAttestationIssuers: Set<String> = emptySet(),
+    val preRegisteredClients: Map<String, ClientMetadata> = emptyMap(),
+) {
+    val x509TrustStore: X509CertificateTrustStore
+        get() = x509TrustAnchors ?: InMemoryTrustStore()
+}
 
 /**
  * A sealed class representing all possible validation errors for clear, type-safe error handling.
@@ -28,20 +52,39 @@ sealed class ClientIdError(val message: String) {
     object MissingClientMetadata : ClientIdError("client_metadata parameter is required for this prefix but was not provided.")
     object CannotExtractSanDnsNamesFromDer : ClientIdError("Could not extract SAN dNSNames from DER (leaf cert DER of x5c header).")
     object X509HashMismatch : ClientIdError("The client_id hash does not match the hash of the provided certificate.")
+    object MissingX509TrustAnchors : ClientIdError("No X.509 trust anchors are configured.")
+
+    /**
+     * The `redirect_uri`'s FQDN did not match an `x509_san_dns` Client Identifier.
+     *
+     * Only ever raised for `redirect_uri`; see the OpenID4VP 1.0 §5.9.3 / §14.3.1 split documented in
+     * [id.walt.openid4vp.clientidprefix.prefixes.X509SanDns].
+     */
+    @Serializable
+    data class RedirectUriHostMismatch(val expectedDnsName: String, val actualHost: String) :
+        ClientIdError("The redirect URI host '$actualHost' is not within '$expectedDnsName'.")
+
     @Serializable
     data class DidResolutionFailed(val reason: String) : ClientIdError("DID resolution failed: $reason")
+
     @Serializable
     data class AttestationError(val reason: String) : ClientIdError("Verifier Attestation JWT is invalid: $reason")
+
     @Serializable
     data class FederationError(val reason: String) : ClientIdError("OpenID Federation trust chain resolution failed: $reason")
+
     @Serializable
     data class PreRegisteredClientNotFound(val id: String) : ClientIdError("Pre-registered client '$id' not found.")
+
     @Serializable
     data class UnsupportedPrefix(val prefix: String) : ClientIdError("Client ID prefix '$prefix' is not supported.")
+
     @Serializable
     data class InvalidMetadata(val reason: String) : ClientIdError("Client metadata is invalid: $reason")
+
     @Serializable
-    data class SanDnsMismatch(val clientIdDnsName: String, val certificateDnsNames: List<String>) : ClientIdError("The client_id DNS name does not match any dNSName SAN in the certificate: Client ID DNS name '${clientIdDnsName}' not found in certificate SANs ($certificateDnsNames).")
+    data class SanDnsMismatch(val clientIdDnsName: String, val certificateDnsNames: List<String>) :
+        ClientIdError("The client_id DNS name does not match any dNSName SAN in the certificate: Client ID DNS name '${clientIdDnsName}' not found in certificate SANs ($certificateDnsNames).")
 }
 
 /**
@@ -51,6 +94,7 @@ sealed class ClientIdError(val message: String) {
 sealed class ClientValidationResult {
     @Serializable
     data class Success(val clientMetadata: ClientMetadata) : ClientValidationResult()
+
     @Serializable
     data class Failure(val error: ClientIdError) : ClientValidationResult()
 }

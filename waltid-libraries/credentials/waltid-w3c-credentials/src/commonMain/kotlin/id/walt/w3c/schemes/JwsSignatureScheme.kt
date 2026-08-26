@@ -1,19 +1,21 @@
 package id.walt.w3c.schemes
 
+import id.walt.credentials.keyresolver.JwtKeyResolver
+import id.walt.credentials.keyresolver.Crypto2JwtKeyResolver
+import id.walt.credentials.keyresolver.ResolvedJwtVerificationKey
 import id.walt.crypto.exceptions.CryptoArgumentException
-import id.walt.crypto.exceptions.VerificationException
 import id.walt.crypto.keys.Key
+import id.walt.crypto2.jose.CompactJws
+import id.walt.crypto2.jose.JwsAlgorithm
+import id.walt.crypto2.keys.Key as Crypto2Key
 import id.walt.crypto.utils.JsonUtils.toJsonObject
 import id.walt.crypto.utils.JwsUtils.decodeJws
-import id.walt.did.dids.DidService
-import id.walt.did.dids.DidUtils
-import id.walt.sdjwt.JWTCryptoProvider
-import id.walt.sdjwt.SDJwt
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.coroutines.CancellationException
 import love.forte.plugin.suspendtrans.annotation.JsPromise
 import love.forte.plugin.suspendtrans.annotation.JvmAsync
 import love.forte.plugin.suspendtrans.annotation.JvmBlocking
@@ -28,6 +30,7 @@ class JwsSignatureScheme : SignatureScheme {
 
     object JwsHeader {
         const val KEY_ID = "kid"
+        const val X5C = "x5c"
     }
 
     object JwsOption {
@@ -39,62 +42,58 @@ class JwsSignatureScheme : SignatureScheme {
         const val VC = "vc"
     }
 
+    @Deprecated("Use Crypto2KeyInfo")
     data class KeyInfo(val keyId: String, val key: Key)
+    @Deprecated("Use Crypto2KeyInfo")
     data class KeysInfo(val keyId: String, val keys: Set<Key>)
+    @JsExport.Ignore
+    data class Crypto2KeyInfo(val keyId: String?, val resolved: ResolvedJwtVerificationKey)
 
-    fun toPayload(data: JsonObject, jwtOptions: Map<String, JsonElement> = emptyMap()) =
-        mapOf(
-            JwsOption.ISSUER to jwtOptions[JwsOption.ISSUER],
-            JwsOption.SUBJECT to jwtOptions[JwsOption.SUBJECT],
-            JwsOption.VC to data,
-            *(jwtOptions.entries.map { it.toPair() }.toTypedArray())
-        ).toJsonObject()
+    fun toPayload(data: JsonObject, jwtOptions: Map<String, JsonElement> = emptyMap(), wrapInVc: Boolean = true) =
+        if (wrapInVc) {
+            mapOf(
+                JwsOption.ISSUER to jwtOptions[JwsOption.ISSUER],
+                JwsOption.SUBJECT to jwtOptions[JwsOption.SUBJECT],
+                JwsOption.VC to data,
+                *(jwtOptions.entries.map { it.toPair() }.toTypedArray())
+            ).toJsonObject()
+        } else {
+            mapOf(
+                JwsOption.ISSUER to jwtOptions[JwsOption.ISSUER],
+                JwsOption.SUBJECT to jwtOptions[JwsOption.SUBJECT],
+                *(data.entries.map { it.toPair() }.toTypedArray()),
+                *(jwtOptions.entries.map { it.toPair() }.toTypedArray())
+            ).toJsonObject()
+        }
 
+    @Deprecated("Use getIssuerCrypto2KeyInfo")
     @JvmBlocking
     @JvmAsync
     @JsPromise
     @JsExport.Ignore
     suspend fun getIssuerKeyInfo(jws: String): KeyInfo {
         val jwsParsed = jws.substringBefore("~").decodeJws()
-        val keyId =
-            jwsParsed.header[JwsHeader.KEY_ID]?.jsonPrimitive?.content ?: throw IllegalArgumentException("Missing key ID in JWS header")
-        val issuerId = (jwsParsed.payload[JwsOption.ISSUER]?.jsonPrimitive?.content ?: keyId)
-        val key = if (DidUtils.isDidUrl(issuerId)) {
-            log.trace { "Resolving key from issuer did: $issuerId" }
-            DidService.resolveToKey(issuerId)
-                .also {
-                    if (log.isTraceEnabled()) {
-                        val exportedJwk = it.getOrNull()?.getPublicKey()?.exportJWK()
-                        log.trace { "Imported key: $it from did: $issuerId, public is: $exportedJwk" }
-                    }
-                }
-                .getOrThrow()
-        } else
-            throw UnsupportedOperationException("Only DIDs are supported as issuer IDs for W3C credentials.")
+        val keyId = jwsParsed.header[JwsHeader.KEY_ID]?.jsonPrimitive?.content
+            ?: throw IllegalArgumentException("Missing key ID in JWS header")
+        val issuerId = jwsParsed.payload[JwsOption.ISSUER]?.jsonPrimitive?.content ?: keyId
+        val key = JwtKeyResolver.resolveFromJwt(jwsParsed.header, jwsParsed.payload)
+            ?: throw IllegalArgumentException("Could not resolve issuer key for '$issuerId'")
         return KeyInfo(keyId, key)
     }
 
+    @Deprecated("Use getIssuerCrypto2KeyInfo")
     @JvmBlocking
     @JvmAsync
     @JsPromise
     @JsExport.Ignore
     suspend fun getIssuerKeysInfo(jws: String): KeysInfo {
         val jwsParsed = jws.decodeJws()
-        val keyId =
-            jwsParsed.header[JwsHeader.KEY_ID]?.jsonPrimitive?.content ?: throw IllegalArgumentException("Missing key ID in JWS header")
-        val issuerId = (jwsParsed.payload[JwsOption.ISSUER]?.jsonPrimitive?.content ?: keyId)
-        val keys = if (DidUtils.isDidUrl(issuerId)) {
-            log.trace { "Resolving keys from issuer did: $issuerId" }
-            DidService.resolveToKeys(issuerId)
-                .also {
-                    if (log.isTraceEnabled()) {
-                        log.trace { "Imported keys: ${it.getOrNull()?.size} from did: $issuerId" }
-                    }
-                }
-                .getOrThrow()
-        } else
-            TODO("Issuer IDs other than DIDs are currently not supported for W3C credentials.")
-        return KeysInfo(keyId, keys)
+        val keyId = jwsParsed.header[JwsHeader.KEY_ID]?.jsonPrimitive?.content
+            ?: throw IllegalArgumentException("Missing key ID in JWS header")
+        val issuerId = jwsParsed.payload[JwsOption.ISSUER]?.jsonPrimitive?.content ?: keyId
+        val key = JwtKeyResolver.resolveFromJwt(jwsParsed.header, jwsParsed.payload)
+            ?: throw IllegalArgumentException("Could not resolve issuer key for '$issuerId'")
+        return KeysInfo(keyId, setOf(key))
     }
 
     /**
@@ -103,6 +102,7 @@ class JwsSignatureScheme : SignatureScheme {
      * - subjectDid: Holder DID
      * - issuerDid: Issuer DID
      */
+    @Deprecated("Use the crypto2 overload accepting a Key and JwsAlgorithm")
     @JvmBlocking
     @JvmAsync
     @JsPromise
@@ -113,20 +113,79 @@ class JwsSignatureScheme : SignatureScheme {
         jwtHeaders: Map<String, JsonElement> = emptyMap(),
         /** Set additional options in the JWT payload */
         jwtOptions: Map<String, JsonElement> = emptyMap(),
+        wrapInVc: Boolean = true
     ): String {
         val payload = Json.encodeToString(
-            toPayload(data, jwtOptions)
+            toPayload(data, jwtOptions, wrapInVc)
         ).encodeToByteArray()
 
         return key.signJws(payload, jwtHeaders)
     }
 
+    @JsExport.Ignore
+    suspend fun sign(
+        data: JsonObject,
+        key: Crypto2Key,
+        algorithm: JwsAlgorithm,
+        jwtHeaders: Map<String, JsonElement> = emptyMap(),
+        jwtOptions: Map<String, JsonElement> = emptyMap(),
+        wrapInVc: Boolean = true,
+    ): String {
+        val payload = Json.encodeToString(toPayload(data, jwtOptions, wrapInVc)).encodeToByteArray()
+        return CompactJws.sign(
+            payload = payload,
+            key = key,
+            algorithm = algorithm,
+            protectedHeader = JsonObject(jwtHeaders),
+        )
+    }
+
+    @JsExport.Ignore
+    suspend fun getIssuerCrypto2KeyInfo(
+        jws: String,
+        resolver: Crypto2JwtKeyResolver = Crypto2JwtKeyResolver(),
+    ): Crypto2KeyInfo {
+        val compact = jws.substringBefore('~')
+        val decoded = CompactJws.decodeUnverified(compact)
+        val payload = Json.parseToJsonElement(decoded.payload.decodeToString()) as? JsonObject
+            ?: throw IllegalArgumentException("JWS payload must be a JSON object")
+        val resolved = resolver.resolveFromJwt(decoded.protectedHeader, payload)
+            ?: throw IllegalArgumentException("Could not resolve issuer key")
+        return Crypto2KeyInfo(
+            keyId = decoded.protectedHeader[JwsHeader.KEY_ID]?.jsonPrimitive?.content,
+            resolved = resolved,
+        )
+    }
+
+    @JsExport.Ignore
+    suspend fun verifyCrypto2(
+        data: String,
+        allowedAlgorithms: Set<JwsAlgorithm> = JwsAlgorithm.entries.toSet(),
+        resolver: Crypto2JwtKeyResolver = Crypto2JwtKeyResolver(),
+    ): Result<JsonElement> = resultOfSuspend {
+        val compact = data.substringBefore('~')
+        val info = getIssuerCrypto2KeyInfo(compact, resolver)
+        val verified = CompactJws.verify(compact, info.resolved.key, allowedAlgorithms)
+        Json.parseToJsonElement(verified.payload.decodeToString())
+    }
+
+    @JsExport.Ignore
+    suspend fun verifyCrypto2(
+        data: String,
+        key: Crypto2Key,
+        allowedAlgorithms: Set<JwsAlgorithm>,
+    ): Result<JsonElement> = resultOfSuspend {
+        val verified = CompactJws.verify(data.substringBefore('~'), key, allowedAlgorithms)
+        Json.parseToJsonElement(verified.payload.decodeToString())
+    }
+
+    @Deprecated("Use verifyCrypto2")
     @JvmBlocking
     @JvmAsync
     @JsPromise
     @JsExport.Ignore
     suspend fun verify(data: String): Result<JsonElement> = runCatching {
-        // Try to verify with all keys from the issuer's DID document
+        // Get keys from either x5c header or DID document
         val keysInfo = getIssuerKeysInfo(data)
         val jws = data.split("~")[0]
 
@@ -141,25 +200,21 @@ class JwsSignatureScheme : SignatureScheme {
             }
 
             if (result.isSuccess) {
-                log.trace { "Verification successful with one of the keys from the DID document" }
+                log.trace { "Verification successful with key" }
                 return result
             }
         }
 
         // If we get here, all keys failed
-        return Result.failure(lastException ?: CryptoArgumentException("Verification failed with all keys from the DID document"))
+        return Result.failure(lastException ?: CryptoArgumentException("Verification failed with all available keys"))
     }
 
-    @JvmBlocking
-    @JvmAsync
-    @JsPromise
-    @JsExport.Ignore
-    suspend fun verifySDJwt(data: String, jwtCryptoProvider: JWTCryptoProvider): Result<JsonElement> = runCatching {
-        return SDJwt.verifyAndParse(data, jwtCryptoProvider).let {
-            if (it.verified)
-                Result.success(it.sdJwt.fullPayload)
-            else
-                Result.failure(VerificationException(it.message ?: "Verification failed"))
-        }
-    }
+}
+
+private suspend fun <T> resultOfSuspend(block: suspend () -> T): Result<T> = try {
+    Result.success(block())
+} catch (cause: CancellationException) {
+    throw cause
+} catch (cause: Throwable) {
+    Result.failure(cause)
 }

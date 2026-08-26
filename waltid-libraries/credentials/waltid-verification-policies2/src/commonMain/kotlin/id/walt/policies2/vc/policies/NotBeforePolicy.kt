@@ -1,5 +1,3 @@
-@file:OptIn(ExperimentalTime::class)
-
 package id.walt.policies2.vc.policies
 
 import com.nfeld.jsonpathkt.JsonPath
@@ -16,12 +14,17 @@ import kotlinx.serialization.json.long
 import kotlinx.serialization.json.longOrNull
 import kotlin.time.Clock
 import kotlin.time.Duration
-import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
 
 @Serializable
 @SerialName("not-before")
-class NotBeforePolicy : CredentialVerificationPolicy2() {
+class NotBeforePolicy(
+    /**
+     * If true, the policy fails when the nbf claim is absent entirely.
+     * Default false for general use; set true for strict profiles (e.g. ETSI TS 119 472-1 EAA-5.2.7.1-01).
+     */
+    val requireField: Boolean = false
+) : CredentialVerificationPolicy2() {
     override val id = "not-before"
 
     companion object {
@@ -32,6 +35,7 @@ class NotBeforePolicy : CredentialVerificationPolicy2() {
     }
 
     @Serializable
+    @SerialName("NotBeforePolicyClaimCheckResult")
     data class NotBeforePolicyClaimCheckResult(
         val date: Instant,
 
@@ -47,14 +51,21 @@ class NotBeforePolicy : CredentialVerificationPolicy2() {
         override val claim: String
     ) : PolicyClaimChecker.ClaimCheckResultSuccess()
 
-    override suspend fun verify(credential: DigitalCredential): Result<JsonElement> {
-        return PolicyClaimChecker.checkClaim(
-            credential,
-            claims
-        ) { claim ->
+    override suspend fun verify(
+        credential: DigitalCredential,
+        context: PolicyExecutionContext
+    ): Result<JsonElement> {
+        return PolicyClaimChecker.checkClaim(credential, claims, requireField) { claim ->
             require(this is JsonPrimitive) { "Claim at $claim is not a JSON primitive" }
 
-            val storedDate = this.longOrNull?.let { Instant.fromEpochSeconds(this.long) } ?: Instant.parse(this.content)
+            val rawLong = this.longOrNull
+            // RFC 7519 §4.1.5: NumericDate is seconds since epoch.
+            // Values >= 1e12 (year ~33658) indicate milliseconds were used instead — non-conformant.
+            require(rawLong == null || rawLong < 1_000_000_000_000L) {
+                "Claim $claim value $rawLong appears to be in milliseconds, not seconds as required by RFC 7519 §4.1.5 (NumericDate)"
+            }
+
+            val storedDate = rawLong?.let { Instant.fromEpochSeconds(it) } ?: Instant.parse(this.content)
             val now = Clock.System.now()
 
             val isTooEarly = storedDate > now
@@ -72,7 +83,6 @@ class NotBeforePolicy : CredentialVerificationPolicy2() {
                 )
             } else {
                 val availableSince = now - storedDate
-
                 Result.success(
                     NotBeforePolicyClaimCheckResult(
                         date = storedDate,

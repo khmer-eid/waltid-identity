@@ -12,51 +12,51 @@ plugins {
 group = "id.walt.credentials"
 
 kotlin {
-    js(IR) {
+    js {
         outputModuleName.set("digital-credentials")
     }
 
     sourceSets {
         commonMain.dependencies {
             // JSON
-            implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
-            implementation("org.jetbrains.kotlinx:kotlinx-serialization-cbor:1.9.0")
+            implementation(identityLibs.kotlinx.serialization.json)
+            implementation(identityLibs.kotlinx.serialization.cbor)
 
             // Ktor client
-            implementation(identityLibs.bundles.waltid.ktor.client)
+            implementation(identityLibs.ktor.client.core)
+
             // Coroutines
-            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
+            implementation(identityLibs.kotlinx.coroutines.core)
 
             // Logging
             implementation(identityLibs.oshai.kotlinlogging)
 
             // walt.id
             api(project(":waltid-libraries:crypto:waltid-crypto"))
+            api(project(":waltid-libraries:crypto:waltid-crypto2"))
+            api(project(":waltid-libraries:crypto:waltid-jose"))
             api(project(":waltid-libraries:credentials:waltid-w3c-credentials"))
+            api(project(":waltid-libraries:credentials:waltid-credential-key-resolver"))
             api(project(":waltid-libraries:credentials:waltid-mdoc-credentials"))
             api(project(":waltid-libraries:credentials:waltid-mdoc-credentials2"))
             api(project(":waltid-libraries:credentials:waltid-dcql"))
             api(project(":waltid-libraries:sdjwt:waltid-sdjwt"))
             api(project(":waltid-libraries:waltid-did"))
+            implementation(project(":waltid-libraries:crypto:waltid-x509"))
 
-            implementation(project.dependencies.platform("org.kotlincrypto.hash:bom:0.6.1"))
-            implementation("org.kotlincrypto.hash:sha2")
+
+            implementation(identityLibs.kotlincrypto.hash.sha2)
         }
         commonTest.dependencies {
             implementation(kotlin("test"))
             implementation(project(":waltid-libraries:credentials:waltid-digital-credentials-examples"))
-            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
-        }
-        jvmMain.dependencies {
-            // Ktor client
-            // implementation("io.ktor:ktor-client-okhttp:$ktor_version")
+            implementation(identityLibs.kotlinx.coroutines.test)
         }
         jvmTest.dependencies {
-            implementation("org.slf4j:slf4j-simple:2.0.17")
+            implementation(identityLibs.slf4j.simple)
 
-            implementation("org.junit.jupiter:junit-jupiter-api")
-            implementation("org.junit.jupiter:junit-jupiter-params")
-            runtimeOnly("org.junit.jupiter:junit-jupiter-engine")
+            implementation(identityLibs.junit.jupiter.api)
+            implementation(identityLibs.junit.jupiter.params)
         }
     }
 }
