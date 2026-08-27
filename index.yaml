@@ -1,5 +1,17 @@
 apiVersion: v1
 entries:
+  common:
+  - apiVersion: v2
+    appVersion: 0.1.0
+    created: "2026-08-27T04:39:32.488589561Z"
+    description: Reusable Helm chart for a single waltid workload (issuer, verifier,
+      wallet-api, portal, ...)
+    digest: 96ed803d431dff9b1dc5312f7aba2f7e23cf884babb4f61e6a92916ac1d5f077
+    name: common
+    type: application
+    urls:
+    - https://khmer-eid.github.io/waltid-identity/common-0.1.0.tgz
+    version: 0.1.0
   issuer:
   - apiVersion: v2
     appVersion: 0.1.0
@@ -36,22 +48,41 @@ entries:
   waltid:
   - apiVersion: v2
     appVersion: 1.16.0
-    created: "2026-02-03T07:42:47.151832722Z"
+    created: "2026-08-27T04:39:32.490018062Z"
     dependencies:
-    - name: issuer
-      repository: file://../issuer
+    - alias: issuer
+      name: common
+      repository: file://../common
       version: 0.1.0
-    - name: verifier
-      repository: file://../verifier
+    - alias: issuer2
+      name: common
+      repository: file://../common
       version: 0.1.0
-    - name: portal
-      repository: file://../portal
+    - alias: verifier
+      name: common
+      repository: file://../common
+      version: 0.1.0
+    - alias: verifier2
+      name: common
+      repository: file://../common
+      version: 0.1.0
+    - alias: wallet-api2
+      name: common
+      repository: file://../common
+      version: 0.1.0
+    - alias: portal
+      name: common
+      repository: file://../common
+      version: 0.1.0
+    - alias: portal2
+      name: common
+      repository: file://../common
       version: 0.1.0
     - name: web-wallet
       repository: file://../web-wallet
       version: 0.1.0
     description: A Helm chart for Kubernetes
-    digest: 9565d54b88c2898f1ff11446c4b30f18fa35c153d33197ab2de0af5baa963a7f
+    digest: 515ef5095e98d9868e3262e659d4cc98ee9381886cf826abd469c389f1a29392
     name: waltid
     type: application
     urls:
@@ -60,12 +91,12 @@ entries:
   web-wallet:
   - apiVersion: v2
     appVersion: 0.1.0
-    created: "2026-02-03T07:42:47.152226296Z"
+    created: "2026-08-27T04:39:32.490451158Z"
     description: A Helm chart for Kubernetes
-    digest: 1f6aa398bb41a23a7d81d952c5d7b304fd218ffd60ff0ddf4c31059ff94a3a5e
+    digest: 1c47e25fabb3745431411eeec103a9158c9d4f9d8cbcfa90ad6908ef130c054a
     name: web-wallet
     type: application
     urls:
     - https://khmer-eid.github.io/waltid-identity/web-wallet-0.1.0.tgz
     version: 0.1.0
-generated: "2026-02-03T07:42:47.149633811Z"
+generated: "2026-08-27T04:39:32.488118218Z"
